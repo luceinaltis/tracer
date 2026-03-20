@@ -312,33 +312,36 @@ Screening → Macro Regime → Cross-Market Discovery → Consensus Mapping
 
 ### Comments & Docstrings
 
-- **코드가 "무엇"을 하는지는 코드 자체로 설명한다.** 변수명, 함수명을 명확하게.
-- **주석은 "왜"를 설명할 때만 쓴다.**
-  - O: `# Finnhub은 장 마감 후 30분 지연 데이터를 반환하므로 캐시 TTL을 길게 설정`
-  - X: `# 가격을 가져온다`
-- **Docstring 규칙:**
-  - 모든 public 함수/클래스에 작성.
-  - 내부(private) 함수는 로직이 비자명할 때만.
-  - 형식: Google style.
+- **Code explains what. Comments explain why.** Use clear variable and function names — no comment needed for obvious logic.
+- **Write a comment only when the reason behind the code is not self-evident.**
+  - Good: `# Finnhub returns data with 30-min post-close delay — set a longer cache TTL`
+  - Bad: `# get the price`
+- **Keep comments minimal.** Too many comments are noise. If a comment restates the code, delete it.
+- **Docstrings:** Required on all public functions and classes. Skip private functions unless the logic is non-obvious. Use Google style.
   ```python
   async def get_price(self, ticker: str) -> float:
-      """현재 주가를 조회한다.
+      """Fetch the current stock price.
 
       Args:
-          ticker: 종목 심볼 (e.g., "AAPL", "005930.KS")
+          ticker: Stock symbol (e.g., "AAPL", "005930.KS")
 
       Returns:
-          현재 주가 (USD 기준)
+          Current price in USD.
 
       Raises:
-          ProviderError: API 호출 실패 시
-          RateLimitError: 요청 한도 초과 시
+          ProviderError: If the API call fails.
+          RateLimitError: If the request limit is exceeded.
       """
   ```
-- **TODO/FIXME 규칙:**
-  - `# TODO: {설명}` - 나중에 구현할 것
-  - `# FIXME: {설명}` - 알려진 문제, 수정 필요
-  - 이슈 번호가 있으면 함께 기록: `# TODO(#42): 캐시 만료 로직 추가`
+- **TODO/FIXME:**
+  - `# TODO: {description}` — deferred implementation
+  - `# FIXME: {description}` — known issue, needs a fix
+  - Include issue number when available: `# TODO(#42): add cache expiry logic`
+
+### Language
+
+- **All project content must be written in English.** This includes code, comments, docstrings, commit messages, and documentation.
+- Korean is acceptable only in user-facing conversational output (CLI prompts, report narratives directed at end users).
 
 ### General
 
