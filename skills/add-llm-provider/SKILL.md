@@ -12,8 +12,8 @@ Step-by-step guide for adding a new LLM to Tracer.
 
 ## Before You Start
 
-- Read `AGENTS.md` Architecture section for LLM abstraction design.
-- Read `src/tracer/llm/base.py` for the LLMProvider interface.
+- Read `docs/architecture.md` for LLM abstraction design.
+- Read `src/tracer/llm/base.py` for the LLMProvider interface (once implemented).
 - Understand the role system: researcher, analyst, strategist, reporter.
 
 ## Key Design Decisions
@@ -55,7 +55,7 @@ Tracer agents expect structured responses (JSON, typed objects). Ensure:
    - Test: completion, structured output, error handling, rate limiting
 
 5. **Update docs**
-   - Add provider to `AGENTS.md` LLM provider table
+   - Add provider to `docs/architecture.md` LLM section
    - Document model-specific quirks or limitations
 
 ## Implementation Template
@@ -88,4 +88,4 @@ class MyNewLLM(LLMProvider):
 - [ ] Rate limiting handled
 - [ ] Tests pass: `pytest tests/llm/test_{provider_name}.py`
 - [ ] Type check passes: `pyright src/tracer/llm/{provider_name}.py`
-- [ ] AGENTS.md updated
+- [ ] `docs/architecture.md` updated
