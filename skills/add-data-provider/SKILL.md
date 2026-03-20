@@ -12,8 +12,8 @@ Step-by-step guide for adding a new data source to Tracer.
 
 ## Before You Start
 
-- Read `AGENTS.md` Architecture section for provider abstraction design.
-- Read `src/tracer/data/base.py` for existing interfaces.
+- Read `docs/architecture.md` for provider abstraction design.
+- Read `src/tracer/data/base.py` for existing interfaces (once implemented).
 - Identify which interface(s) the new provider implements:
   - `PriceProvider` - stock price, OHLCV, historical
   - `FundamentalProvider` - financial statements, valuation metrics
@@ -46,8 +46,8 @@ Step-by-step guide for adding a new data source to Tracer.
    - At least: one success case, one error case, one rate limit case per method
 
 5. **Update docs**
-   - Add provider to `AGENTS.md` data source mapping table
-   - Add rate limit info to rate limits table
+   - Add provider to `docs/architecture.md` capability routing table
+   - Add rate limit info to `docs/architecture.md` rate limits table
 
 ## Implementation Template
 
@@ -78,4 +78,4 @@ class MyNewProvider(PriceProvider):
 - [ ] Error handling with typed exceptions
 - [ ] Tests pass: `pytest tests/data/test_{provider_name}.py`
 - [ ] Type check passes: `pyright src/tracer/data/{provider_name}.py`
-- [ ] AGENTS.md updated
+- [ ] `docs/architecture.md` updated
