@@ -26,7 +26,7 @@ Step-by-step guide for adding a new data source to Tracer.
 1. **Research the API**
    - Read official docs. Check: auth method, rate limits, data format, coverage.
    - Verify free tier is sufficient for prototype.
-   - Document rate limits in `AGENTS.md` rate limits table.
+   - Document rate limits in `docs/architecture.md` rate limits table.
 
 2. **Create provider file**
    - Path: `src/tracer/data/{provider_name}.py`
