@@ -209,6 +209,21 @@ tracer/
 │   └── tracer/
 │       ├── __init__.py
 │       ├── agents/            # Agent roles (researcher, analyst, strategist, reporter)
+│       ├── conversation/      # Conversational layer
+│       │   ├── engine.py      # ConversationEngine — session context, turn history
+│       │   ├── intent.py      # IntentParser — query → Intent dataclass
+│       │   ├── synthesizer.py # ResponseSynthesizer — causal chain + adversarial check
+│       │   └── session.py     # SessionManager — JSONL append, compaction
+│       ├── memory/            # Session memory search
+│       │   ├── search.py      # memory_search tool — hybrid FTS + HNSW via DuckDB
+│       │   └── index.py       # DuckDB session index — embedding generation, upsert
+│       ├── tools/             # Pipeline tool wrappers
+│       │   ├── price_event.py
+│       │   ├── news.py
+│       │   ├── insider.py
+│       │   ├── macro.py
+│       │   ├── fundamentals.py
+│       │   └── cross_market.py
 │       ├── llm/               # LLM adapter + capability registry
 │       │   ├── base.py        # LLMProvider protocol
 │       │   ├── registry.py    # Role → adapter routing
@@ -231,6 +246,7 @@ tracer/
 │       └── config/            # Configuration loader
 ├── tests/
 │   ├── agents/
+│   ├── conversation/
 │   ├── llm/
 │   ├── data/
 │   ├── storage/
@@ -287,6 +303,159 @@ Screening → Macro Regime → Cross-Market Discovery → Consensus Mapping
 - Contents: thesis, supporting evidence, contrarian angle, risk factors, timeline, position sizing suggestion
 - Format: "What the market doesn't know yet" narrative
 - Agent: **reporter**
+
+## Conversational Layer
+
+Users interact with Tracer via natural language queries. The conversational layer wraps the Tracer Cycle steps as discrete tools, manages session context, and routes each query to the appropriate pipeline steps.
+
+```
+CLI (REPL)
+    ↓
+ConversationEngine          — in-memory turn history, context window management
+    ↓
+IntentParser                — query → structured Intent object (researcher/Haiku)
+    ↓
+Pipeline Tools              — selective invocation based on intent
+  ├── price_event()  ├── news()  ├── insider()  ├── macro()
+  ├── fundamentals() ├── cross_market()  └── memory_search()
+    ↓
+┌─→ AnalysisLoop ──────────────────────────────────────────┐
+│   Analyze data → evaluate confidence → if insufficient:  │
+│   decide what's missing → call additional tool ──────────┘
+│   Exit: confidence ≥ 0.7 | max 3 iterations | cost limit
+    ↓
+ResponseSynthesizer         — causal chain + adversarial check + conviction score
+    ↓
+SessionManager              — append turn to JSONL; trigger compaction if needed
+```
+
+### Intent Types
+
+| Intent | Example Query | Tools Invoked |
+|--------|---------------|---------------|
+| `event_analysis` | "Why did AAPL spike 5% today?" | price_event, news, insider, cross_market |
+| `deep_dive` | "Full analysis on TSMC" | price_event, fundamentals, news, insider, cross_market |
+| `alpha_hunt` | "Where's the hidden alpha right now?" | macro, cross_market, news |
+| `macro_query` | "Where are we in the rate cycle?" | macro |
+| `cross_market` | "How does Korea semi data affect US AI stocks?" | cross_market, macro, price_event |
+| `follow_up` | "What about insider trades?" | resolved from session context |
+
+### LLM Role Mapping
+
+| Component | Role | Default Model | Rationale |
+|-----------|------|---------------|-----------|
+| IntentParser | researcher | Claude Haiku | Lightweight classification; speed matters |
+| AnalysisLoop | analyst | Claude Opus | Core reasoning; quality critical |
+| ResponseSynthesizer (causal chain) | analyst | Claude Opus | Deep synthesis |
+| ResponseSynthesizer (adversarial check) | strategist | Claude Opus | Contrarian judgment |
+| SessionManager (compaction) | reporter | Claude Haiku | Summarization; cost matters |
+
+### Tool Result Contract
+
+All pipeline tools return a `ToolResult` subtype consumed uniformly by the AnalysisLoop:
+
+```python
+@dataclass
+class ToolResult:
+    tool: str
+    success: bool
+    data: dict
+    source: str
+    fetched_at: datetime
+    is_stale: bool
+    error: str | None  # populated if success=False; never raises silently
+```
+
+Failed tools are excluded from the evidence chain and flagged in the response caveat.
+
+### Response Format
+
+```
+[ANALYSIS: {ticker/theme} — {date}]
+Conviction: {score}/10
+
+WHAT HAPPENED
+{1-2 sentence direct answer}
+
+EVIDENCE CHAIN
+1. {evidence} — Source: {source}, {date}
+   → leads to: {conclusion}
+
+ADVERSARIAL CHECK
+- {reason this signal could be wrong}
+- {data staleness or reliability caveat}
+
+VERDICT
+{Final judgment with conviction score and key qualifier}
+```
+
+### Error Handling
+
+| Failure | Behavior |
+|---------|----------|
+| Single tool fails | Exclude from evidence; note as "data unavailable" in ADVERSARIAL CHECK |
+| ≥2 tools fail in one iteration | Exit loop early; caveat lists missing data |
+| LLM call fails | Retry once; if still failing, return partial result with incompleteness note |
+| Rate limit exhaustion mid-loop | Exit immediately; synthesize from data collected so far |
+| JSONL write error | Log to stderr; still return response — never block on persistence |
+| memory_search returns contradictory past analysis | Include both findings; flag conflict explicitly |
+
+## Memory System
+
+Session memory uses a three-tier architecture:
+
+### Tier 1 — Raw Audit Log (JSONL)
+
+Append-only per-session log. Every turn: user message, tool calls, tool results, agent response.
+
+```jsonl
+{"turn": 1, "role": "user", "content": "Why did AAPL spike?", "ts": "..."}
+{"turn": 1, "role": "tool_call", "tool": "fetch_news", "args": {"ticker": "AAPL"}, "ts": "..."}
+{"turn": 1, "role": "tool_result", "success": true, "source": "Finnhub", "ts": "..."}
+{"turn": 1, "role": "assistant", "content": "...", "conviction": 8, "ts": "..."}
+```
+
+Complete audit trail — reconstructs exactly what the agent did and why.
+
+### Tier 2 — Compressed Summary (Markdown)
+
+When a session exceeds 8,000 tokens (measured via `tiktoken`), SessionManager compacts the conversation into a Markdown summary using the reporter role (Haiku). The summary replaces raw turns in the active context window; the JSONL is preserved.
+
+### Tier 3 — Search Index (DuckDB)
+
+DuckDB indexes all Tier 2 Markdown summaries for hybrid retrieval: keyword (FTS) + vector similarity (VSS/HNSW). Writes occur only at compaction time.
+
+- Embedding model: `text-embedding-3-small` (OpenAI API) or `all-MiniLM-L6-v2` (local fallback). Configured in `TOOLS.md`.
+- Tables: `session_index` (FTS), `session_embeddings` (HNSW).
+- Source of truth is the Markdown files; DuckDB is the index only.
+
+The agent calls `memory_search` autonomously when past context may be relevant.
+
+### MEMORY.md vs. Tier 2
+
+- **Tier 2**: auto-generated, per-session. Temporary working memory.
+- **MEMORY.md**: cross-session long-term memory. Manually curated or auto-aggregated. Contains active theses and strong multi-session signals. Loaded at session start via `BOOTSTRAP.md`.
+
+## Workspace
+
+Agent configuration lives at `~/.tracer/`, loaded at session start.
+
+```
+~/.tracer/
+├── IDENTITY.md      # Agent role and identity
+├── SOUL.md          # Tone: cold, data-first, adversarial self-check
+├── USER.md          # User preferences, risk tolerance, watchlist, cost budget
+├── TOOLS.md         # Available providers, API key status, embedding model config
+├── BOOTSTRAP.md     # Session init: load market context, watchlist, MEMORY.md
+├── HEARTBEAT.md     # Session-start checks: watchlist re-evaluation, data freshness
+├── MEMORY.md        # Cross-session long-term memory
+└── memory/
+    └── YYYY/MM/DD/
+        ├── session-{id}.jsonl   ← Tier 1
+        └── session-{id}.md      ← Tier 2
+```
+
+HEARTBEAT tasks run at session start (not as a background daemon). Results are summarized as a status message before the REPL hands control to the user.
 
 ## Coding Conventions
 
