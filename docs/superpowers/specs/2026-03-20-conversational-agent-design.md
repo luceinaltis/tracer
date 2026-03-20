@@ -225,13 +225,15 @@ When a session exceeds **8,000 tokens** (measured by the ConversationEngine usin
 
 **Scope:** per-session. The raw JSONL is preserved; the Markdown is the condensed version for future context loading.
 
-### Tier 3 — Search Index (SQLite)
+### Tier 3 — Search Index (DuckDB)
 
-SQLite indexes all Tier 2 Markdown summaries for hybrid retrieval: **keyword (FTS5) + vector similarity**.
+DuckDB indexes all Tier 2 Markdown summaries for hybrid retrieval: **keyword (FTS extension) + vector similarity (VSS extension, HNSW index)**.
 
+- Already in the stack — no additional dependency needed.
+- Writes occur only at compaction time (infrequent), so DuckDB's analytical write pattern is not a concern here.
 - **Embedding model:** `text-embedding-3-small` (OpenAI) via API, or `all-MiniLM-L6-v2` (local, via `sentence-transformers`) as fallback. Configurable in `TOOLS.md`.
-- Embeddings are generated when a Markdown summary is written (at compaction time).
-- SQLite stores embeddings as BLOB; similarity search uses cosine distance in Python (not in-DB).
+- Embeddings are generated at compaction time and stored in the `session_embeddings` table with an HNSW index for fast ANN search.
+- Keyword and vector search can be combined in a single DuckDB query.
 
 The agent calls `memory_search` autonomously when it judges past context is relevant:
 
@@ -242,7 +244,7 @@ User: "Analyze TSMC"
   → current analysis includes delta: "conviction moved 6→8 since last analysis, why"
 ```
 
-SQLite is the search index only — source of truth is the Markdown files.
+DuckDB is the search index only — source of truth is the Markdown files.
 
 **No retention policy in v1.** Files accumulate. Archival/cleanup is a future concern.
 
@@ -273,7 +275,6 @@ Agent configuration lives at `~/.tracer/` and is loaded at session start via `BO
             └── 20/
                 ├── session-143201.jsonl   ← Tier 1
                 └── session-143201.md      ← Tier 2
-    index.db                               ← Tier 3 SQLite index
 ```
 
 ### HEARTBEAT Execution Model
@@ -301,10 +302,9 @@ HEARTBEAT results are summarized as a brief status message at the start of each 
 
 | Store | Contents | Write Pattern |
 |-------|----------|---------------|
-| DuckDB (`tracer.db`) | Market data: prices, fundamentals, macro, news, signals | Analytical append (market data pipeline) |
+| DuckDB (`tracer.db`) | Market data, signals, agent_logs, session search index (FTS + HNSW) | Analytical append; index updated at compaction |
 | JSONL (`memory/.../session-*.jsonl`) | Conversational audit trail: turns, tool calls, LLM responses | Transactional append (every turn) |
 | Markdown (`memory/.../session-*.md`) | Compressed session summaries (Tier 2) | Write-once at compaction |
-| SQLite (`memory/index.db`) | Embedding + keyword index over Markdown files | Updated at compaction |
 
 **`agent_logs` in DuckDB (from AGENTS.md):** stores pipeline execution metadata (which Tracer Cycle steps ran, timing, data source used). This is distinct from conversational turns. Both exist: DuckDB tracks pipeline runs; JSONL tracks conversation turns. No overlap.
 
@@ -324,8 +324,8 @@ src/tracer/
 │   ├── synthesizer.py   # ResponseSynthesizer — causal chain + adversarial check (analyst/Opus)
 │   └── session.py       # SessionManager — JSONL append, compaction trigger, Markdown write
 ├── memory/
-│   ├── search.py        # memory_search tool — hybrid FTS5 + vector retrieval
-│   └── index.py         # SQLite index management — embedding generation, upsert
+│   ├── search.py        # memory_search tool — hybrid FTS + HNSW retrieval via DuckDB
+│   └── index.py         # DuckDB session index management — embedding generation, upsert
 ├── tools/               # Pipeline tool wrappers (one file per tool)
 │   ├── price_event.py   # → PriceEventResult
 │   ├── news.py          # → NewsResult
@@ -352,5 +352,5 @@ CLI entry point: `scripts/tracer.py` — REPL loop, sends each message to `Conve
 - **No hallucination:** if an API call fails or data is unavailable, the agent states it explicitly and excludes it from the conclusion. No estimation or gap-filling.
 - **Dependency inversion:** tools accept capability protocols (`PriceProvider`), never concrete adapters (`FinnhubAdapter`).
 - **Cost-aware loop:** each additional tool call in the reasoning loop must clear a value > cost threshold. Cost budget is configurable in `USER.md` (per-session API call limit).
-- **Storage separation:** DuckDB for market data and signals. JSONL for conversation audit. SQLite for session search index only.
+- **Storage separation:** DuckDB for market data, signals, and session search index. JSONL for conversation audit trail. No SQLite dependency.
 - **CLI first:** core engine is interface-agnostic. Chat UI or API layer can be added later without touching the core.

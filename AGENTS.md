@@ -173,14 +173,16 @@ DuckDB single-file database (`tracer.db`). Append-only for market data, analytic
 
 ```
 DuckDB (tracer.db)
-├── prices          - OHLCV time series (daily append)
-├── fundamentals    - valuation, financial statements (quarterly append)
-├── macro           - economic indicators (monthly append)
-├── news            - articles + sentiment scores (daily append)
-├── alternative     - insider trades, congressional trades, etc. (event append)
-├── signals         - generated signal history
-├── reports         - analysis report metadata
-└── agent_logs      - agent execution logs
+├── prices             - OHLCV time series (daily append)
+├── fundamentals       - valuation, financial statements (quarterly append)
+├── macro              - economic indicators (monthly append)
+├── news               - articles + sentiment scores (daily append)
+├── alternative        - insider trades, congressional trades, etc. (event append)
+├── signals            - generated signal history
+├── reports            - analysis report metadata
+├── agent_logs         - agent execution logs
+├── session_index      - session summary metadata + FTS index (keyword search)
+└── session_embeddings - session summary embeddings + HNSW index (vector search)
 ```
 
 Also serves as API cache to reduce rate limit pressure.
