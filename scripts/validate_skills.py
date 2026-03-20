@@ -70,10 +70,7 @@ def check_required_sections(skill_dir: Path, content: str) -> None:
     body = re.sub(r"^---.*?---\s*", "", content, flags=re.DOTALL)
     headings = re.findall(r"^## (.+)", body, re.MULTILINE)
 
-    has_input = any(
-        h.lower().startswith(("input", "before you start"))
-        for h in headings
-    )
+    has_input = any(h.lower().startswith(("input", "before you start")) for h in headings)
     if not has_input:
         error(skill_dir.name, "missing '## Input' or '## Before You Start' section")
 

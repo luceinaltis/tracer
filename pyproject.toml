@@ -1,0 +1,23 @@
+[project]
+name = "tracer"
+version = "0.1.0"
+description = "Conversational investment agent for discovering alpha in global security markets"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "ruff>=0.9.0",
+  "pyright>=1.1.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
