@@ -98,40 +98,10 @@ Agent: "I need Price data for AAPL"
 
 ### LLM Layer
 
-```
-llm/
-├── base.py            # LLMProvider protocol (Chat, StructuredOutput, Streaming)
-├── registry.py        # role → adapter routing, fallback chain
-└── adapters/
-    ├── claude.py      # ClaudeAdapter
-    ├── openai.py      # OpenAIAdapter
-    └── gemini.py      # GeminiAdapter
-```
-
 Each adapter registers its capabilities. Prototype defaults to Claude for all roles.
-Expand per-role assignment via config when needed.
-
-Roles and default assignments (overridable via config):
-
-| Role       | Description                          | Default          |
-|------------|--------------------------------------|------------------|
-| researcher | Gather and summarize market data     | Claude Sonnet    |
-| analyst    | Deep financial/cross-market analysis | Claude Opus      |
-| strategist | Investment decision and signal gen   | Claude Opus      |
-| reporter   | Summary and report generation        | Claude Haiku     |
+Per-role assignment is overridable via config. See Project Structure for directory layout.
 
 ### Data Layer
-
-```
-data/
-├── base.py            # Capability protocols (Price, Fundamental, Macro, News, Alternative)
-├── registry.py        # capability → adapter routing, fallback chain
-└── adapters/
-    ├── finnhub.py     # Price, News, Alternative (insider, congress)
-    ├── yfinance.py    # Price, Fundamental
-    ├── fred.py        # Macro
-    └── fmp.py         # Fundamental, Alternative (SEC filings)
-```
 
 Each adapter is a single class with one client, registering multiple capabilities.
 Registry auto-routes by capability with fallback:
@@ -338,13 +308,14 @@ SessionManager              — append turn to JSONL; trigger compaction if need
 
 ### LLM Role Mapping
 
-| Component | Role | Default Model | Rationale |
-|-----------|------|---------------|-----------|
-| IntentParser | researcher | Claude Haiku | Lightweight classification; speed matters |
-| AnalysisLoop | analyst | Claude Opus | Core reasoning; quality critical |
-| ResponseSynthesizer (causal chain) | analyst | Claude Opus | Deep synthesis |
-| ResponseSynthesizer (adversarial check) | strategist | Claude Opus | Contrarian judgment |
-| SessionManager (compaction) | reporter | Claude Haiku | Summarization; cost matters |
+All role-to-model assignments are overridable via config.
+
+| Role | Description | Default Model | Used By |
+|------|-------------|---------------|---------|
+| researcher | Gather and summarize market data | Claude Sonnet | IntentParser, Universe Screening, Consensus Mapping |
+| analyst | Deep financial/cross-market analysis | Claude Opus | AnalysisLoop, ResponseSynthesizer (causal chain) |
+| strategist | Investment decision and signal gen | Claude Opus | ResponseSynthesizer (adversarial check), Contrarian Detection, Conviction Scoring |
+| reporter | Summary and report generation | Claude Haiku | SessionManager (compaction), Alpha Report |
 
 ### Tool Result Contract
 
