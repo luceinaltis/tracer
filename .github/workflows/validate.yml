@@ -30,7 +30,6 @@ jobs:
 
   validate-docs:
     runs-on: ubuntu-latest
-    if: contains(github.event.pull_request.labels.*.name, '') || true
     steps:
       - uses: actions/checkout@v4
 
