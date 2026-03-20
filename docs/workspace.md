@@ -2,7 +2,7 @@
 
 Agent configuration lives at `~/.tracer/`, loaded at session start.
 
-```
+```text
 ~/.tracer/
 ├── IDENTITY.md      # Agent role and identity
 ├── SOUL.md          # Tone: cold, data-first, adversarial self-check

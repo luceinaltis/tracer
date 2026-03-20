@@ -16,7 +16,7 @@ Every doc file must have:
 
 ## Links
 
-- All internal links (e.g., `[see architecture](architecture.md)`) must point to existing files.
+- All internal links must point to existing files. Example: `[see architecture](../architecture.md)`
 - No absolute paths to local filesystem. Use relative paths only.
 - References to AGENTS.md sections must match actual section headings.
 

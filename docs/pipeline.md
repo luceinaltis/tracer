@@ -1,6 +1,6 @@
 # Agent Pipeline (Tracer Cycle)
 
-```
+```text
 Screening → Macro Regime → Cross-Market Discovery → Consensus Mapping
     → Contrarian Detection → Conviction Scoring → Alpha Report
 ```

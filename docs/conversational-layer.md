@@ -2,7 +2,7 @@
 
 Users interact with Tracer via natural language queries. The conversational layer wraps the Tracer Cycle steps as discrete tools, manages session context, and routes each query to the appropriate pipeline steps.
 
-```
+```text
 CLI (REPL)
     ↓
 ConversationEngine          — in-memory turn history, context window management
@@ -70,7 +70,7 @@ Failed tools are excluded from the evidence chain and flagged in the response ca
 
 ## Response Format
 
-```
+```text
 [ANALYSIS: {ticker/theme} — {date}]
 Conviction: {score}/10
 

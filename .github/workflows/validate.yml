@@ -1,0 +1,38 @@
+name: Validate Docs & Skills
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "skills/**"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate docs
+        run: python scripts/validate_docs.py
+
+      - name: Validate skills
+        run: python scripts/validate_skills.py
+
+  auto-merge:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable auto-merge
+        run: gh pr merge ${{ github.event.pull_request.number }} --auto --squash
+        env:
+          GH_TOKEN: ${{ github.token }}

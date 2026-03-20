@@ -6,7 +6,7 @@ Validation rules for files under `skills/`.
 
 Every skill must be a directory containing at least `SKILL.md`:
 
-```
+```text
 skills/
 └── {skill-name}/
     └── SKILL.md

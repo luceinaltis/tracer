@@ -5,7 +5,7 @@
 Both LLM and Data layers use the same pattern: adapters register capabilities,
 registry routes requests by capability. Agents never reference a specific source directly.
 
-```
+```text
 Agent: "I need Price data for AAPL"
   → Registry.get(Price)
   → Returns FinnhubAdapter (primary) or YfinanceAdapter (fallback)
@@ -52,7 +52,7 @@ API key missing → adapter auto-skipped. Fallback kicks in transparently.
 
 DuckDB single-file database (`tracer.db`). Append-only for market data, analytical queries optimized.
 
-```
+```text
 DuckDB (tracer.db)
 ├── prices             - OHLCV time series (daily append)
 ├── fundamentals       - valuation, financial statements (quarterly append)
