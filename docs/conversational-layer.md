@@ -10,8 +10,13 @@ ConversationEngine          — in-memory turn history, context window managemen
 IntentParser                — query → structured Intent object (researcher/Haiku)
     ↓
 Pipeline Tools              — selective invocation based on intent
-  ├── price_event()  ├── news()  ├── insider()  ├── macro()
-  ├── fundamentals() ├── cross_market()  └── memory_search()
+  ├── price_event()
+  ├── news()
+  ├── insider()
+  ├── macro()
+  ├── fundamentals()
+  ├── cross_market()
+  └── memory_search()
     ↓
 ┌─→ AnalysisLoop ──────────────────────────────────────────┐
 │   Analyze data → evaluate confidence → if insufficient:  │
