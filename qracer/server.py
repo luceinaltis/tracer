@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 
+from qracer.agent_monitor import AgentMonitor
 from qracer.alert_monitor import AlertMonitor
 from qracer.alerts import AlertCondition
 from qracer.autonomous import AutonomousMonitor
@@ -39,12 +40,14 @@ class Server:
         notifications: NotificationRegistry | None = None,
         *,
         autonomous_monitor: AutonomousMonitor | None = None,
+        agent_monitor: AgentMonitor | None = None,
         telegram_poller: TelegramBotPoller | None = None,
         tick_interval: float = 1.0,
     ) -> None:
         self._alert_monitor = alert_monitor
         self._task_executor = task_executor
         self._autonomous_monitor = autonomous_monitor
+        self._agent_monitor = agent_monitor
         self._notifications = notifications or NotificationRegistry()
         self._telegram_poller = telegram_poller
         self._tick_interval = tick_interval
@@ -111,6 +114,17 @@ class Server:
                     )
             except Exception:
                 logger.debug("Autonomous check failed", exc_info=True)
+
+        if self._agent_monitor and self._agent_monitor.should_check():
+            try:
+                agent_results = await self._agent_monitor.check()
+                for ar in agent_results:
+                    if ar.ok:
+                        logger.info("Agent ran: %s [%s]", ar.name, ar.model)
+                    else:
+                        logger.warning("Agent failed: %s — %s", ar.name, ar.error)
+            except Exception:
+                logger.debug("Agent check failed", exc_info=True)
 
         if self._telegram_poller is not None:
             try:

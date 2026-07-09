@@ -464,6 +464,20 @@ def _build_registries() -> tuple[LLMRegistry, DataRegistry, list[str]]:
     return llm_registry, data_registry, warnings
 
 
+def _openrouter_provider(llm_registry: object) -> object | None:
+    """Resolve the OpenRouter LLM adapter from a registry, or None if unavailable.
+
+    Custom agents address OpenRouter model ids directly, so they run through the
+    single OpenRouter adapter (which honors ``CompletionRequest.model``).
+    """
+    from qracer.llm.providers import Role
+
+    try:
+        return llm_registry.get(Role.RESEARCHER, name="openrouter")  # type: ignore[attr-defined]
+    except KeyError:
+        return None
+
+
 _HELP_TEXT = """\
 Available commands:
   save              Save last analysis as Markdown
@@ -503,6 +517,8 @@ async def _repl_loop(
     sessions_dir: Path | None = None,
     current_session: Path | None = None,
     fact_store: object | None = None,
+    agent_store: object | None = None,
+    agent_provider: object | None = None,
 ) -> None:
     """Run the interactive read-eval-print loop."""
     from qracer.alert_monitor import AlertMonitor
@@ -685,6 +701,12 @@ async def _repl_loop(
             await _handle_backtest(engine, data_registry)
             continue
 
+        # Custom agents: run all enabled agents now (ad-hoc), ignoring schedule.
+        # Slash-form only: "run" is a common query verb ("run a DCF on TSLA").
+        if cmd == "/run" or cmd.startswith("/run "):
+            await _handle_run_agents(user_input, agent_store, agent_provider)
+            continue
+
         # Show progress while query is processing.
         click.echo("Analyzing...", nl=False)
         try:
@@ -701,6 +723,47 @@ async def _repl_loop(
             logger.exception("Error processing query")
             click.echo(f"Something went wrong: {type(exc).__name__}")
             click.echo("Hint: try rephrasing your query or check 'qracer status'.\n")
+
+
+def _report_agent_results(results: object, store: object) -> None:
+    """Print each agent result and persist it so the web UI can show it."""
+    for r in results:  # type: ignore[attr-defined]
+        click.echo(f"\n── {r.name} [{r.model}] ──")
+        click.echo(r.output if r.ok else f"(error) {r.error}")
+        store.record_run(  # type: ignore[attr-defined]
+            r.agent_id, output=r.output if r.ok else None, error=r.error
+        )
+
+
+async def _handle_run_agents(
+    user_input: str,
+    agent_store: object | None,
+    agent_provider: object | None,
+) -> None:
+    """Run all enabled custom agents now, ignoring their schedule.
+
+    ``/run`` runs every enabled agent with the default trigger message;
+    ``/run <text>`` passes <text> to each agent as the user turn.
+    """
+    from qracer.agent_runner import run_agents
+    from qracer.agents_store import AgentStore
+
+    if not isinstance(agent_store, AgentStore) or agent_provider is None:
+        click.echo("Custom agents unavailable (OpenRouter not configured).\n")
+        return
+
+    parts = user_input.split(maxsplit=1)
+    query = parts[1].strip() if len(parts) > 1 else None
+
+    agents = [a for a in agent_store.agents if a.enabled]
+    if not agents:
+        click.echo("No enabled agents. Add some via 'qracer web'.\n")
+        return
+
+    click.echo(f"Running {len(agents)} agent(s)...")
+    results = await run_agents(agents, agent_provider, user_input=query)  # type: ignore[arg-type]
+    _report_agent_results(results, agent_store)
+    click.echo()
 
 
 async def _handle_backtest(engine: object, data_registry: object | None) -> None:
@@ -1101,6 +1164,12 @@ def repl() -> None:
 
     task_executor = TaskExecutor(task_store, data_registry, llm_registry, engine=engine)
 
+    # Custom agents (model + free-form prompt) for on-demand `/run`.
+    from qracer.agents_store import AgentStore
+
+    agent_store = AgentStore(_user_dir() / "agents.json")
+    agent_provider = _openrouter_provider(llm_registry)
+
     asyncio.run(
         _repl_loop(
             engine,
@@ -1111,8 +1180,60 @@ def repl() -> None:
             sessions_dir=sessions_dir,
             current_session=session_logger.path,
             fact_store=fact_store,
+            agent_store=agent_store,
+            agent_provider=agent_provider,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# qracer run
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.argument("query", required=False)
+@click.option("--agent", "agent_name", default=None, help="Run only the agent with this name.")
+def run(query: str | None, agent_name: str | None) -> None:
+    """Run custom agents now (ad-hoc), ignoring their schedule.
+
+    Runs every enabled agent, or just ``--agent NAME``. An optional QUERY is
+    passed to each agent as the user turn (otherwise the default trigger is used).
+    """
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    from qracer.agent_runner import run_agents
+    from qracer.agents_store import AgentStore
+
+    llm_registry, _data, warnings = _build_registries()
+    for warn in warnings:
+        click.echo(f"  ⚠ {warn}")
+
+    provider = _openrouter_provider(llm_registry)
+    if provider is None:
+        click.echo(
+            "OpenRouter is not configured. Enable it in providers.toml and set "
+            "OPENROUTER_API_KEY, then retry."
+        )
+        sys.exit(1)
+
+    store = AgentStore(_user_dir() / "agents.json")
+    if agent_name:
+        agent = store.find_by_name(agent_name)
+        if agent is None:
+            click.echo(f"No agent named {agent_name!r}. See 'qracer web' to manage agents.")
+            sys.exit(1)
+        agents = [agent]
+    else:
+        agents = [a for a in store.agents if a.enabled]
+
+    if not agents:
+        click.echo("No agents to run. Add some via 'qracer web'.")
+        return
+
+    click.echo(f"Running {len(agents)} agent(s)...")
+    results = asyncio.run(run_agents(agents, provider, user_input=query))  # type: ignore[arg-type]
+    _report_agent_results(results, store)
 
 
 # ---------------------------------------------------------------------------
@@ -1188,11 +1309,24 @@ def serve(check_interval: int) -> None:
             cooldown_minutes=app_cfg.alert_cooldown_minutes,
         )
 
+    # Custom autonomous agents (model + free-form prompt, cron/continuous).
+    from qracer.agent_monitor import AgentMonitor
+    from qracer.agents_store import AgentStore
+
+    agent_monitor: AgentMonitor | None = None
+    agent_store = AgentStore(_user_dir() / "agents.json")
+    agent_provider = _openrouter_provider(llm_registry)
+    if agent_provider is not None:
+        agent_monitor = AgentMonitor(agent_store, agent_provider)  # type: ignore[arg-type]
+    elif len(agent_store) > 0:
+        click.echo("  ⚠ Custom agents found but OpenRouter is not configured — agents disabled.")
+
     server = Server(
         alert_monitor,
         task_executor,
         notifications,
         autonomous_monitor=autonomous_monitor,
+        agent_monitor=agent_monitor,
         telegram_poller=telegram_poller,
         tick_interval=1.0,
     )
@@ -1215,6 +1349,11 @@ def serve(check_interval: int) -> None:
         )
     if telegram_poller is not None:
         click.echo("  Telegram bot: receiving commands (try /help in chat)")
+    if agent_monitor is not None:
+        scheduled = sum(
+            1 for a in agent_store.agents if a.enabled and a.trigger_type.value != "manual"
+        )
+        click.echo(f"  Custom agents: {scheduled} autonomous (cron/continuous) active")
     click.echo("  Press Ctrl+C to stop.\n")
 
     try:
@@ -1287,8 +1426,9 @@ def web(host: str, port: int) -> None:
     )
 
     app = create_app()
-    click.echo(f"qracer web API listening on http://{host}:{port}")
-    click.echo("  Routes mounted under /api (try /api/health)")
+    click.echo(f"qracer web listening on http://{host}:{port}")
+    click.echo(f"  Custom-agent config UI: http://{host}:{port}/")
+    click.echo("  JSON API mounted under /api (try /api/health)")
     uvicorn.run(app, host=host, port=port)
 
 
