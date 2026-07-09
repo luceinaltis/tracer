@@ -45,6 +45,32 @@ class TestServer:
         executor.should_check.assert_called_once()
         executor.check.assert_called_once()
 
+    async def test_tick_runs_agent_monitor(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        agent_result = MagicMock()
+        agent_result.ok = True
+        agent_result.name = "News watcher"
+        agent_result.model = "openai/gpt-4o"
+        agent_monitor = MagicMock()
+        agent_monitor.should_check.return_value = True
+        agent_monitor.check = AsyncMock(return_value=[agent_result])
+
+        server = Server(monitor, executor, agent_monitor=agent_monitor)
+        await server._tick()
+
+        agent_monitor.check.assert_called_once()
+
+    async def test_tick_handles_agent_monitor_error_gracefully(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        agent_monitor = MagicMock()
+        agent_monitor.should_check.return_value = True
+        agent_monitor.check = AsyncMock(side_effect=RuntimeError("boom"))
+
+        server = Server(monitor, executor, agent_monitor=agent_monitor)
+        await server._tick()  # Should not raise
+
     async def test_tick_skips_when_not_due(self) -> None:
         monitor = _make_monitor()
         monitor.should_check.return_value = False

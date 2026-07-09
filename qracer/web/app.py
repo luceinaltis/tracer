@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from qracer.agents_store import AgentStore
 from qracer.alerts import AlertStore
 from qracer.config.loader import _user_dir
 from qracer.tasks import TaskStore
@@ -47,6 +49,18 @@ def create_app(user_dir: Path | None = None) -> "FastAPI":
     app.state.task_store = TaskStore(base_dir / "tasks.json")
     app.state.alert_store = AlertStore(base_dir / "alerts.json")
     app.state.watchlist = Watchlist(base_dir / "watchlist.json")
+    app.state.agent_store = AgentStore(base_dir / "agents.json")
 
     app.include_router(api_router, prefix="/api")
+
+    # Mount the NiceGUI custom-agent config UI at "/" (optional dependency).
+    try:
+        from qracer.web.ui import mount as mount_agent_ui
+
+        mount_agent_ui(app, base_dir)
+    except ImportError:
+        pass  # nicegui not installed — API still works, no UI
+    except Exception:  # pragma: no cover - never let the UI break the API
+        logging.getLogger(__name__).warning("Failed to mount agent UI", exc_info=True)
+
     return app

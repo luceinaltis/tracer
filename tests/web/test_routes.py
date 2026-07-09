@@ -189,6 +189,28 @@ class TestPortfolioRoute:
         assert holding["weight_pct"] == pytest.approx(100.0)
 
 
+class TestAgentUI:
+    def test_agent_store_attached(self, tmp_path: Path) -> None:
+        from qracer.agents_store import AgentStore
+
+        app = create_app(user_dir=tmp_path)
+        assert isinstance(app.state.agent_store, AgentStore)
+
+    def test_api_still_works_with_ui_mounted(self, client: TestClient) -> None:
+        # NiceGUI owns "/", but the JSON API must remain intact.
+        assert client.get("/api/health").status_code == 200
+
+    def test_index_page_served(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Guard against any accidental network call from the catalog fetch.
+        monkeypatch.setattr("qracer.web.ui.list_models", lambda *a, **k: [])
+        app = create_app(user_dir=tmp_path)
+        with TestClient(app) as client:
+            resp = client.get("/")
+        assert resp.status_code == 200
+
+
 def test_create_app_uses_user_dir(tmp_path: Path) -> None:
     """Routes should read/write the directory passed to create_app."""
     app = create_app(user_dir=tmp_path)
