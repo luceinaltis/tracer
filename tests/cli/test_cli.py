@@ -125,9 +125,7 @@ class TestInstall:
             patch("qracer.llm.openrouter_adapter.list_models", return_value=fake_models),
         ):
             # Choice=4 (OpenRouter), API key, search 'claude', pick #1, currency USD
-            result = runner.invoke(
-                main, ["install"], input="4\nsk-or-key\nclaude\n1\nUSD\n"
-            )
+            result = runner.invoke(main, ["install"], input="4\nsk-or-key\nclaude\n1\nUSD\n")
 
         assert result.exit_code == 0, result.output
         creds = (home_dir / "credentials.env").read_text()

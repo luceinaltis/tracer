@@ -100,9 +100,7 @@ def _update_config_llm(config_path: Path, provider: str, model: str | None = Non
     if not config_path.exists():
         return
     original = config_path.read_text(encoding="utf-8")
-    text = re.sub(
-        r"(?m)^\s*llm_provider\s*=.*$", f'llm_provider = "{provider}"', original, count=1
-    )
+    text = re.sub(r"(?m)^\s*llm_provider\s*=.*$", f'llm_provider = "{provider}"', original, count=1)
     if model:
         text = re.sub(r"(?m)^\s*llm_model\s*=.*$", f'llm_model = "{model}"', text, count=1)
     if text != original:
