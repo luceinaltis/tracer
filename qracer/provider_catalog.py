@@ -69,6 +69,15 @@ BUILTIN_LLM_PROVIDERS: dict[str, tuple[str, list[str]]] = {
             "reporter",
         ],
     ),
+    "openrouter": (
+        "qracer.llm.openrouter_adapter.OpenRouterAdapter",
+        [
+            "researcher",
+            "analyst",
+            "strategist",
+            "reporter",
+        ],
+    ),
 }
 
 # All known data-provider capability protocols (for runtime isinstance checks).

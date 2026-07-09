@@ -26,6 +26,15 @@ from qracer.config.loader import (
 
 logger = logging.getLogger(__name__)
 
+# Windows consoles often default to a legacy code page (e.g. cp949 on Korean
+# Windows) that cannot encode the box-drawing / ✓ / — glyphs this CLI prints,
+# which raises UnicodeEncodeError mid-output. Force UTF-8 on the streams before
+# Click emits anything (help text is printed during argument parsing).
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        _reconfigure(encoding="utf-8", errors="replace")
+
 SCHEMA_DIR = Path(__file__).parent / "config" / "schema"
 
 BANNER = """\
@@ -54,6 +63,7 @@ _LLM_DISPLAY_NAMES: dict[str, str] = {
     "claude": "Claude (Anthropic)",
     "openai": "OpenAI (GPT-4o)",
     "gemini": "Gemini (Google)",
+    "openrouter": "OpenRouter (multi-model gateway)",
 }
 
 
@@ -83,6 +93,74 @@ def _update_provider_selection(
         pattern = rf"(\[providers\.{re.escape(name)}\][^\[]*?)enabled\s*=\s*(true|false)"
         text = re.sub(pattern, rf"\1enabled = {enable}", text)
     providers_path.write_text(text, encoding="utf-8")
+
+
+def _update_config_llm(config_path: Path, provider: str, model: str | None = None) -> None:
+    """Persist the active LLM provider (and model, if given) into config.toml."""
+    if not config_path.exists():
+        return
+    original = config_path.read_text(encoding="utf-8")
+    text = re.sub(
+        r"(?m)^\s*llm_provider\s*=.*$", f'llm_provider = "{provider}"', original, count=1
+    )
+    if model:
+        text = re.sub(r"(?m)^\s*llm_model\s*=.*$", f'llm_model = "{model}"', text, count=1)
+    if text != original:
+        config_path.write_text(text, encoding="utf-8")
+
+
+def _select_openrouter_model() -> str:
+    """Interactive model picker backed by the live OpenRouter ``/models`` catalog.
+
+    Search → numbered list → pick.  Falls back to manual entry if the catalog
+    cannot be fetched (offline), and accepts a typed model id at any prompt.
+    """
+    from qracer.llm.openrouter_adapter import DEFAULT_OPENROUTER_MODEL, list_models
+
+    click.echo("\n  Fetching available OpenRouter models...")
+    while True:
+        term = click.prompt(
+            "  Search models (keyword like 'claude'/'gpt', or blank to browse all)",
+            default="",
+            show_default=False,
+        ).strip()
+        try:
+            matches = list_models(term or None)
+        except Exception as exc:  # network / parse failure → manual entry
+            click.echo(f"  ⚠ Could not fetch model list ({exc}).")
+            return click.prompt(
+                "  Enter an OpenRouter model id manually", default=DEFAULT_OPENROUTER_MODEL
+            ).strip()
+
+        if not matches:
+            click.echo("  No models matched — try another keyword.")
+            continue
+
+        shown = matches[:25]
+        suffix = f" matching '{term}'" if term else ""
+        click.echo(f"\n  {len(matches)} model(s){suffix}:")
+        for i, m in enumerate(shown, 1):
+            click.echo(
+                f"    {i:2}. {m.id}  "
+                f"(ctx {m.context_length:,}, "
+                f"${m.prompt_per_million:.2f}/${m.completion_per_million:.2f} per 1M in/out)"
+            )
+        if len(matches) > len(shown):
+            click.echo(f"    ... {len(matches) - len(shown)} more — narrow with a keyword.")
+
+        choice = click.prompt(
+            "  Pick a number, type a model id, or 's' to search again", default="1"
+        ).strip()
+        if choice.lower() == "s":
+            continue
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(shown):
+                return shown[idx - 1].id
+            click.echo("  Number out of range — try again.")
+            continue
+        # Any other input is treated as a literal model id.
+        return choice
 
 
 @main.command()
@@ -120,6 +198,11 @@ def install() -> None:
         if value:
             creds[chosen_env] = value
 
+    # 4b. OpenRouter: choose a model from the live catalog.
+    openrouter_model: str | None = None
+    if chosen_name == "openrouter":
+        openrouter_model = _select_openrouter_model()
+
     # 5. Prompt for portfolio currency
     currency = click.prompt("\n  Portfolio currency", default="USD").strip()
 
@@ -130,6 +213,11 @@ def install() -> None:
 
     # 7. Enable chosen LLM provider in providers.toml
     _update_provider_selection(home_dir / "providers.toml", chosen_name, llm_choices)
+
+    # 7b. Persist provider (+ OpenRouter model) choice to config.toml
+    _update_config_llm(home_dir / "config.toml", chosen_name, openrouter_model)
+    if openrouter_model:
+        click.echo(f"  Model set to {openrouter_model}")
 
     # 8. Update portfolio currency if non-default
     if currency != "USD":
@@ -148,6 +236,38 @@ def install() -> None:
     click.echo("\nNext steps:")
     click.echo("  qracer status   — check configuration")
     click.echo("  qracer repl     — start interactive session")
+
+
+# ---------------------------------------------------------------------------
+# qracer models
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--search", "-s", default=None, help="Filter models by keyword (id or name).")
+@click.option("--limit", "-n", "limit", default=50, show_default=True, help="Max models to show.")
+def models(search: str | None, limit: int) -> None:
+    """List available OpenRouter models (id, context window, price)."""
+    from qracer.llm.openrouter_adapter import list_models
+
+    try:
+        found = list_models(search)
+    except Exception as exc:
+        click.echo(f"Failed to fetch OpenRouter models: {exc}")
+        raise SystemExit(1) from exc
+
+    header = f"{len(found)} model(s)"
+    if search:
+        header += f" matching '{search}'"
+    click.echo(header + ":")
+    for m in found[:limit]:
+        click.echo(
+            f"  {m.id}  "
+            f"(ctx {m.context_length:,}, "
+            f"${m.prompt_per_million:.2f}/${m.completion_per_million:.2f} per 1M in/out)"
+        )
+    if len(found) > limit:
+        click.echo(f"  ... and {len(found) - limit} more — use --search or --limit.")
 
 
 # ---------------------------------------------------------------------------

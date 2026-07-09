@@ -25,6 +25,14 @@ priority = 50
 kind = "llm"
 api_key_env = "GOOGLE_API_KEY"
 
+[providers.openrouter]
+enabled = false
+priority = 50
+kind = "llm"
+api_key_env = "OPENROUTER_API_KEY"
+# Model is chosen at `qracer install` time and stored in config.toml (llm_model).
+# Browse available models with `qracer models` or `qracer models --search <kw>`.
+
 [providers.finnhub]
 enabled = false
 priority = 50

@@ -1376,7 +1376,7 @@ wheels = [
 [[package]]
 name = "qracer"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "duckdb" },
@@ -1401,6 +1401,9 @@ gemini = [
     { name = "google-generativeai" },
 ]
 openai = [
+    { name = "openai" },
+]
+openrouter = [
     { name = "openai" },
 ]
 pdf = [
@@ -1434,6 +1437,7 @@ requires-dist = [
     { name = "google-generativeai", marker = "extra == 'gemini'", specifier = ">=0.8.0" },
     { name = "openai", marker = "extra == 'all-llm'", specifier = ">=1.0.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0.0" },
+    { name = "openai", marker = "extra == 'openrouter'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "textual", specifier = ">=0.70.0" },
@@ -1441,7 +1445,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.24.0" },
     { name = "yfinance", specifier = ">=0.2.0" },
 ]
-provides-extras = ["openai", "gemini", "finnhub", "fred", "all-llm", "web", "pdf"]
+provides-extras = ["openai", "gemini", "openrouter", "finnhub", "fred", "all-llm", "web", "pdf"]
 
 [package.metadata.requires-dev]
 dev = [

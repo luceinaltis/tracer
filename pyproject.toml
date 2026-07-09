@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]
 gemini = ["google-generativeai>=0.8.0"]
+openrouter = ["openai>=1.0.0"]
 finnhub = ["finnhub-python>=2.4.0"]
 fred = ["fredapi>=0.5.0"]
 all-llm = ["openai>=1.0.0", "google-generativeai>=0.8.0"]
@@ -35,6 +36,10 @@ dev = [
 
 [project.scripts]
 qracer = "qracer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.ruff]
 target-version = "py312"

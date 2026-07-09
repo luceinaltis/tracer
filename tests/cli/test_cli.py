@@ -104,6 +104,46 @@ class TestInstall:
         assert data["providers"]["openai"]["enabled"] is True
         assert data["providers"]["claude"]["enabled"] is False
 
+    def test_install_selects_openrouter_with_model(self, tmp_path: Path) -> None:
+        home_dir = tmp_path / ".qracer"
+        runner = CliRunner()
+
+        from qracer.llm.openrouter_adapter import ModelInfo
+
+        fake_models = [
+            ModelInfo(
+                id="anthropic/claude-3.5-sonnet",
+                name="Claude 3.5 Sonnet",
+                context_length=200000,
+                prompt_price=3e-6,
+                completion_price=1.5e-5,
+            )
+        ]
+
+        with (
+            patch("qracer.cli._user_dir", return_value=home_dir),
+            patch("qracer.llm.openrouter_adapter.list_models", return_value=fake_models),
+        ):
+            # Choice=4 (OpenRouter), API key, search 'claude', pick #1, currency USD
+            result = runner.invoke(
+                main, ["install"], input="4\nsk-or-key\nclaude\n1\nUSD\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        creds = (home_dir / "credentials.env").read_text()
+        assert "OPENROUTER_API_KEY=sk-or-key" in creds
+
+        import tomllib
+
+        with open(home_dir / "providers.toml", "rb") as f:
+            prov = tomllib.load(f)
+        assert prov["providers"]["openrouter"]["enabled"] is True
+
+        with open(home_dir / "config.toml", "rb") as f:
+            cfg = tomllib.load(f)
+        assert cfg["llm_provider"] == "openrouter"
+        assert cfg["llm_model"] == "anthropic/claude-3.5-sonnet"
+
 
 class TestStatus:
     def test_status_no_config(self) -> None:
