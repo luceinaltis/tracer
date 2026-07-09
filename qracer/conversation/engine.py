@@ -24,6 +24,13 @@ from qracer.conversation.context import (
     is_stale,
     resolve_pronoun,
 )
+from qracer.conversation.context_store import (
+    decay_stale,
+    load_context,
+    merge_contexts,
+    merge_with_theses,
+    save_context,
+)
 from qracer.conversation.handlers import (
     ComparisonHandler,
     PortfolioHandler,
@@ -74,6 +81,7 @@ class ConversationEngine:
         language: str = "en",
         summaries_dir: Path | None = None,
         fact_store: FactStore | None = None,
+        context_path: Path | None = None,
     ) -> None:
         self._llm = llm_registry
         self._data = data_registry
@@ -118,10 +126,36 @@ class ConversationEngine:
         self._session_id = session_logger.path.stem if session_logger else "unknown"
         self._compactor = SessionCompactor(llm_registry) if session_logger else None
         self._report_exporter = ReportExporter(report_dir) if report_dir else None
-        self._context: ConversationContext = ConversationContext()
+        self._context_path = context_path
+        self._persisted_context: ConversationContext = self._load_initial_context()
+        self._context: ConversationContext = self._persisted_context
         self._turn_counter = 0
         self._last_response: EngineResponse | None = None
         self._config_version = 0
+
+    def _load_initial_context(self) -> ConversationContext:
+        """Load, decay, and enrich the persisted context with open theses."""
+        if self._context_path is None:
+            return ConversationContext()
+        ctx = decay_stale(load_context(self._context_path))
+        if self._fact_store is not None:
+            try:
+                open_theses = self._fact_store.get_open_theses()
+                thesis_tickers = [t.ticker for t in open_theses]
+                if thesis_tickers:
+                    ctx = merge_with_theses(ctx, thesis_tickers)
+            except Exception:
+                logger.warning("Failed to merge open theses into context", exc_info=True)
+        return ctx
+
+    def _persist_context(self) -> None:
+        """Write the current context to disk if a path is configured."""
+        if self._context_path is None:
+            return
+        try:
+            save_context(self._context, self._context_path)
+        except OSError:
+            logger.warning("Failed to persist conversation context", exc_info=True)
 
     def update_registries(
         self,
@@ -241,7 +275,10 @@ class ConversationEngine:
         # 0. Extract conversation context from session log.
         if self._session_logger is not None:
             turns = self._session_logger.read_all()[-50:]
-            self._context = extract_context(turns)
+            session_ctx = extract_context(turns)
+            # Fold persisted cross-session state in as trailing topics so a
+            # returning user keeps their prior focus even on a fresh log.
+            self._context = merge_contexts(session_ctx, self._persisted_context)
 
         # 0b. Check for stale context — notify user if returning after timeout.
         if is_stale(self._context) and self._context.current_topic:
@@ -327,6 +364,9 @@ class ConversationEngine:
         response = EngineResponse(text=result.text, intent=intent, analysis=result.analysis)
         self._last_response = response
         self._persist_facts(result.analysis)
+        # Capture the latest context on disk so the next session resumes here.
+        self._persisted_context = self._context
+        self._persist_context()
         return response
 
     def _persist_facts(self, analysis: AnalysisResult) -> None:

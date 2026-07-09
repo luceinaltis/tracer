@@ -1008,6 +1008,7 @@ def repl() -> None:
         memory_searcher=memory_searcher,
         summaries_dir=summaries_dir,
         fact_store=fact_store,
+        context_path=_user_dir() / "context.json",
     )
 
     task_executor = TaskExecutor(task_store, data_registry, llm_registry, engine=engine)

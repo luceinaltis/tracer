@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from helpers import failed_result as _failed_result
@@ -11,6 +12,7 @@ from helpers import ok_result as _ok_result
 
 from qracer.config.models import Holding, PortfolioConfig
 from qracer.conversation.analysis_loop import AnalysisLoop, AnalysisResult
+from qracer.conversation.context import ConversationContext
 from qracer.conversation.dispatcher import invoke_tool, invoke_tools
 from qracer.conversation.engine import ConversationEngine, EngineResponse
 from qracer.conversation.intent import Intent, IntentType
@@ -935,3 +937,147 @@ class TestFactExtraction:
             response = await engine.query("AAPL price")
 
         assert response.text  # Should produce a response without crashing
+
+
+# ---------------------------------------------------------------------------
+# Persistent ConversationContext across sessions
+# ---------------------------------------------------------------------------
+
+
+class TestPersistentContext:
+    async def test_context_file_written_after_query(self, tmp_path) -> None:
+        """Engine should write context.json after processing a query."""
+        from qracer.memory.session_logger import SessionLogger
+
+        context_path = tmp_path / "context.json"
+        session_logger = SessionLogger(tmp_path / "session.jsonl")
+
+        intent_resp = json.dumps({"intent": "event_analysis", "tickers": ["AAPL"]})
+        llm = _mock_llm_registry({Role.RESEARCHER: intent_resp, Role.STRATEGIST: "Response"})
+        engine = ConversationEngine(
+            llm, DataRegistry(), session_logger=session_logger, context_path=context_path
+        )
+
+        with patch("qracer.conversation.handlers.invoke_tools") as mock_invoke:
+            mock_invoke.return_value = [_ok_result("price_event")]
+            await engine.query("Analyze AAPL")
+
+        assert context_path.exists()
+        data = json.loads(context_path.read_text())
+        assert "AAPL" in data["topic_stack"]
+        assert data["current_topic"] == "AAPL"
+
+    async def test_context_resumed_in_new_engine(self, tmp_path) -> None:
+        """A fresh engine pointed at the same context_path should surface
+        prior-session topics via the topic_stack."""
+        from qracer.memory.session_logger import SessionLogger
+
+        context_path = tmp_path / "context.json"
+
+        # First session: discuss AAPL.
+        session1 = SessionLogger(tmp_path / "session1.jsonl")
+        llm1 = _mock_llm_registry(
+            {
+                Role.RESEARCHER: json.dumps({"intent": "event_analysis", "tickers": ["AAPL"]}),
+                Role.STRATEGIST: "R",
+            }
+        )
+        engine1 = ConversationEngine(
+            llm1, DataRegistry(), session_logger=session1, context_path=context_path
+        )
+        with patch("qracer.conversation.handlers.invoke_tools") as mock_invoke:
+            mock_invoke.return_value = [_ok_result("price_event")]
+            await engine1.query("Analyze AAPL")
+
+        # Second session: no log, brand-new engine picks up the persisted stack.
+        session2 = SessionLogger(tmp_path / "session2.jsonl")
+        llm2 = _mock_llm_registry(
+            {
+                Role.RESEARCHER: json.dumps({"intent": "macro_query", "tickers": []}),
+                Role.STRATEGIST: "R",
+            }
+        )
+        engine2 = ConversationEngine(
+            llm2, DataRegistry(), session_logger=session2, context_path=context_path
+        )
+
+        assert "AAPL" in engine2._context.topic_stack
+        assert engine2._context.current_topic == "AAPL"
+
+    async def test_stale_context_is_decayed_on_load(self, tmp_path) -> None:
+        """A context file older than 7 days should come back empty."""
+        from qracer.conversation.context_store import save_context
+        from qracer.memory.session_logger import SessionLogger
+
+        context_path = tmp_path / "context.json"
+        stale_ctx = ConversationContext(
+            current_topic="AAPL",
+            topic_stack=["AAPL", "TSLA"],
+            last_activity=datetime.now() - timedelta(days=30),
+        )
+        save_context(stale_ctx, context_path)
+
+        llm = _mock_llm_registry(
+            {Role.RESEARCHER: json.dumps({"intent": "macro_query", "tickers": []})}
+        )
+        engine = ConversationEngine(
+            llm,
+            DataRegistry(),
+            session_logger=SessionLogger(tmp_path / "s.jsonl"),
+            context_path=context_path,
+        )
+
+        assert engine._context.topic_stack == []
+        assert engine._context.current_topic is None
+
+    async def test_open_theses_merged_into_topic_stack(self, tmp_path) -> None:
+        """Open FactStore theses should surface in the topic_stack on load."""
+        from qracer.memory.fact_store import FactStore
+        from qracer.memory.session_logger import SessionLogger
+        from qracer.models.base import TradeThesis
+
+        fact_store = FactStore()
+        fact_store.save_thesis(
+            TradeThesis(
+                ticker="NVDA",
+                entry_zone=(400.0, 420.0),
+                target_price=500.0,
+                stop_loss=380.0,
+                risk_reward_ratio=4.0,
+                catalyst="AI demand",
+                catalyst_date=None,
+                conviction=9,
+                summary="Long NVDA",
+            ),
+            session_id="prior",
+        )
+
+        llm = _mock_llm_registry(
+            {Role.RESEARCHER: json.dumps({"intent": "macro_query", "tickers": []})}
+        )
+        engine = ConversationEngine(
+            llm,
+            DataRegistry(),
+            session_logger=SessionLogger(tmp_path / "s.jsonl"),
+            context_path=tmp_path / "context.json",
+            fact_store=fact_store,
+        )
+
+        assert "NVDA" in engine._context.topic_stack
+        fact_store.close()
+
+    async def test_no_context_path_is_noop(self) -> None:
+        """Engine without a context_path should not crash on query."""
+        llm = _mock_llm_registry(
+            {
+                Role.RESEARCHER: json.dumps({"intent": "macro_query", "tickers": []}),
+                Role.STRATEGIST: "R",
+            }
+        )
+        engine = ConversationEngine(llm, DataRegistry())  # context_path defaults to None
+
+        with patch("qracer.conversation.handlers.invoke_tools") as mock_invoke:
+            mock_invoke.return_value = []
+            response = await engine.query("Macro question")
+
+        assert response.text  # no crash, no context written
