@@ -13,6 +13,7 @@ import time
 from qracer.alert_monitor import AlertMonitor
 from qracer.alerts import AlertCondition
 from qracer.autonomous import AutonomousMonitor
+from qracer.data.providers import StreamingProvider
 from qracer.notifications.providers import Notification, NotificationCategory
 from qracer.notifications.registry import NotificationRegistry
 from qracer.notifications.telegram_poller import BotCommand, TelegramBotPoller
@@ -40,6 +41,7 @@ class Server:
         *,
         autonomous_monitor: AutonomousMonitor | None = None,
         telegram_poller: TelegramBotPoller | None = None,
+        streaming_adapter: StreamingProvider | None = None,
         tick_interval: float = 1.0,
     ) -> None:
         self._alert_monitor = alert_monitor
@@ -47,6 +49,7 @@ class Server:
         self._autonomous_monitor = autonomous_monitor
         self._notifications = notifications or NotificationRegistry()
         self._telegram_poller = telegram_poller
+        self._streaming_adapter = streaming_adapter
         self._tick_interval = tick_interval
         self._shutdown_event = asyncio.Event()
         self._started_at: float | None = None
@@ -56,17 +59,75 @@ class Server:
         logger.info("Server started (tick=%.1fs)", self._tick_interval)
         self._started_at = time.monotonic()
 
-        while not self._shutdown_event.is_set():
-            await self._tick()
-            try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(),
-                    timeout=self._tick_interval,
-                )
-            except asyncio.TimeoutError:
-                pass
+        await self._start_streaming()
+
+        try:
+            while not self._shutdown_event.is_set():
+                await self._tick()
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=self._tick_interval,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            await self._stop_streaming()
 
         logger.info("Server stopped")
+
+    async def _start_streaming(self) -> None:
+        """Connect the streaming adapter and wire it to the alert monitor.
+
+        On any failure the server falls back to REST polling — the
+        adapter is simply set to ``None`` so the tick loop keeps working.
+        """
+        if self._streaming_adapter is None:
+            return
+        try:
+            await self._streaming_adapter.connect()
+        except Exception:
+            logger.warning(
+                "Streaming adapter failed to connect — falling back to REST polling",
+                exc_info=True,
+            )
+            self._streaming_adapter = None
+            return
+
+        self._streaming_adapter.on_price(self._on_stream_price)
+
+        # Subscribe to every ticker that currently has an active alert.
+        tickers = sorted({a.ticker for a in self._alert_monitor.store.get_active()})
+        if tickers:
+            try:
+                await self._streaming_adapter.subscribe(tickers)
+            except Exception:
+                logger.warning("Streaming subscribe failed for %s", tickers, exc_info=True)
+        logger.info("Streaming adapter wired (subscribed=%d)", len(tickers))
+
+    async def _stop_streaming(self) -> None:
+        """Disconnect the streaming adapter on shutdown."""
+        if self._streaming_adapter is None:
+            return
+        try:
+            await self._streaming_adapter.disconnect()
+        except Exception:
+            logger.debug("Streaming adapter disconnect failed", exc_info=True)
+
+    async def _on_stream_price(self, ticker: str, price: float) -> None:
+        """Evaluate alerts for *ticker* immediately on a real-time price."""
+        try:
+            triggered = self._alert_monitor.evaluate_price(ticker, price)
+        except Exception:
+            logger.debug("Streaming alert evaluation failed", exc_info=True)
+            return
+        for result in triggered:
+            logger.info("Alert triggered (stream): %s", result.message)
+            await self._notify(
+                NotificationCategory.PRICE_ALERT,
+                result.message,
+                result.message,
+            )
 
     async def _tick(self) -> None:
         """Single heartbeat — check alerts and tasks."""

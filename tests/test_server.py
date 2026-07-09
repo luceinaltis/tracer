@@ -133,6 +133,92 @@ class TestServer:
         await server._tick()  # Should not raise
 
 
+class TestServerStreamingAdapter:
+    """Lifecycle + price-callback wiring for the streaming adapter."""
+
+    def _streaming_adapter(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.connect = AsyncMock()
+        adapter.disconnect = AsyncMock()
+        adapter.subscribe = AsyncMock()
+        adapter.on_price = MagicMock()
+        adapter.on_news = MagicMock()
+        return adapter
+
+    async def test_streaming_connect_and_subscribe_active_tickers(self) -> None:
+        monitor = _make_monitor()
+        monitor.store.get_active.return_value = [
+            _alert("a1", "AAPL", 200.0),
+            _alert("a2", "AAPL", 180.0),
+            _alert("a3", "TSLA", 250.0),
+        ]
+        executor = _make_executor()
+        adapter = self._streaming_adapter()
+
+        server = Server(monitor, executor, streaming_adapter=adapter)
+        await server._start_streaming()
+
+        adapter.connect.assert_awaited_once()
+        adapter.on_price.assert_called_once()
+        subscribed = adapter.subscribe.call_args[0][0]
+        assert sorted(subscribed) == ["AAPL", "TSLA"]
+
+    async def test_streaming_connect_failure_falls_back_to_polling(self) -> None:
+        monitor = _make_monitor()
+        monitor.store.get_active.return_value = []
+        executor = _make_executor()
+        adapter = self._streaming_adapter()
+        adapter.connect = AsyncMock(side_effect=ConnectionError("down"))
+
+        server = Server(monitor, executor, streaming_adapter=adapter)
+        await server._start_streaming()
+
+        # Failed connect clears the adapter — the tick loop keeps running.
+        assert server._streaming_adapter is None
+        adapter.subscribe.assert_not_awaited()
+
+    async def test_stop_streaming_disconnects(self) -> None:
+        monitor = _make_monitor()
+        monitor.store.get_active.return_value = []
+        executor = _make_executor()
+        adapter = self._streaming_adapter()
+
+        server = Server(monitor, executor, streaming_adapter=adapter)
+        await server._start_streaming()
+        await server._stop_streaming()
+
+        adapter.disconnect.assert_awaited_once()
+
+    async def test_stream_price_evaluates_and_notifies(self) -> None:
+        result = MagicMock()
+        result.message = "AAPL above 200"
+        monitor = _make_monitor()
+        monitor.evaluate_price = MagicMock(return_value=[result])
+        executor = _make_executor()
+        notifications = MagicMock()
+        notifications.channels = ["telegram"]
+        notifications.notify = AsyncMock(return_value={"telegram": True})
+
+        server = Server(monitor, executor, notifications)
+        await server._on_stream_price("AAPL", 210.0)
+
+        monitor.evaluate_price.assert_called_once_with("AAPL", 210.0)
+        notifications.notify.assert_awaited_once()
+
+    async def test_stream_price_swallows_evaluation_errors(self) -> None:
+        monitor = _make_monitor()
+        monitor.evaluate_price = MagicMock(side_effect=RuntimeError("boom"))
+        executor = _make_executor()
+        notifications = MagicMock()
+        notifications.channels = ["telegram"]
+        notifications.notify = AsyncMock()
+
+        server = Server(monitor, executor, notifications)
+        await server._on_stream_price("AAPL", 210.0)  # Must not raise
+
+        notifications.notify.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Telegram bot command integration
 # ---------------------------------------------------------------------------

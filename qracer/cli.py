@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 import click
 
 if TYPE_CHECKING:
+    from qracer.config.models import QracerConfig
+    from qracer.data.providers import StreamingProvider
     from qracer.data.registry import DataRegistry
     from qracer.llm.registry import LLMRegistry
 
@@ -268,6 +270,33 @@ def _write_toml(path: Path, data: dict[str, object]) -> None:
 # ---------------------------------------------------------------------------
 # qracer repl
 # ---------------------------------------------------------------------------
+
+
+def _build_streaming_adapter(config: QracerConfig) -> StreamingProvider | None:
+    """Return a Finnhub streaming adapter if enabled and available.
+
+    The adapter is only constructed when the ``finnhub`` provider is
+    enabled in ``providers.toml`` *and* an API key is available *and*
+    the ``websockets`` package is importable.  Any failure returns
+    ``None`` so the caller falls back to REST polling.
+    """
+    finnhub_cfg = config.providers.providers.get("finnhub")
+    if finnhub_cfg is None or not finnhub_cfg.enabled:
+        return None
+    api_key_env = finnhub_cfg.api_key_env or "FINNHUB_API_KEY"
+    api_key = config.credentials.get(api_key_env) or os.environ.get(api_key_env)
+    if not api_key:
+        return None
+    try:
+        from qracer.data.finnhub_ws import FinnhubWebSocketAdapter
+
+        return FinnhubWebSocketAdapter(api_key=api_key)
+    except ImportError:
+        logger.info("Streaming disabled — install 'qracer[streaming]' for WebSocket support")
+        return None
+    except Exception as exc:
+        logger.warning("Streaming adapter unavailable: %s", exc)
+        return None
 
 
 def _build_registries() -> tuple[LLMRegistry, DataRegistry, list[str]]:
@@ -1070,12 +1099,15 @@ def serve(check_interval: int) -> None:
             cooldown_minutes=app_cfg.alert_cooldown_minutes,
         )
 
+    streaming_adapter = _build_streaming_adapter(config)
+
     server = Server(
         alert_monitor,
         task_executor,
         notifications,
         autonomous_monitor=autonomous_monitor,
         telegram_poller=telegram_poller,
+        streaming_adapter=streaming_adapter,
         tick_interval=1.0,
     )
 
@@ -1097,6 +1129,8 @@ def serve(check_interval: int) -> None:
         )
     if telegram_poller is not None:
         click.echo("  Telegram bot: receiving commands (try /help in chat)")
+    if streaming_adapter is not None:
+        click.echo("  Streaming: Finnhub WebSocket (real-time alerts)")
     click.echo("  Press Ctrl+C to stop.\n")
 
     try:

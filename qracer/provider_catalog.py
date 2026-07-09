@@ -78,6 +78,7 @@ _DATA_CAPABILITY_PROTOCOLS: list[tuple[str, str]] = [
     ("qracer.data.providers", "MacroProvider"),
     ("qracer.data.providers", "NewsProvider"),
     ("qracer.data.providers", "AlternativeProvider"),
+    ("qracer.data.providers", "StreamingProvider"),
 ]
 
 

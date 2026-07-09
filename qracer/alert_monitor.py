@@ -88,3 +88,22 @@ class AlertMonitor:
                     logger.info(msg)
 
         return results
+
+    def evaluate_price(self, ticker: str, price: float) -> list[AlertResult]:
+        """Evaluate alerts for *ticker* against a known *price*.
+
+        Intended for push-based flows — for example, a WebSocket trade
+        callback that already carries the latest price.  Unlike
+        :meth:`check`, this method does not fetch from the data
+        registry and only touches alerts for the given ticker.
+        """
+        results: list[AlertResult] = []
+        for alert in self._store.get_by_ticker(ticker):
+            if not alert.active:
+                continue
+            if alert.evaluate(price):
+                self._store.mark_triggered(alert.id, price)
+                msg = f"Alert triggered: {alert.describe()} (price: {price})"
+                results.append(AlertResult(alert=alert, triggered_price=price, message=msg))
+                logger.info(msg)
+        return results

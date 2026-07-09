@@ -144,14 +144,21 @@ terminal_port = 8194
 
 ## Real-Time Data
 
-> **구현 예정** — WebSocket 실시간 데이터는 아직 구현되지 않았습니다. 현재는 REST polling만 지원합니다.
+Real-time price (and news) streaming is provided by
+`FinnhubWebSocketAdapter`, which implements the `StreamingProvider`
+capability. It is enabled automatically by `qracer serve` when the
+`finnhub` provider is enabled in `providers.toml` and the
+`qracer[streaming]` extra is installed. Each trade message is
+dispatched to `AlertMonitor.evaluate_price`, allowing threshold alerts
+to trigger on the next tick instead of waiting for the next polling
+interval.
 
 For Live Mode, qracer needs sub-second price data and streaming news:
 
 | Capability | Preferred Provider | Protocol | Fallback |
 |---|---|---|---|
-| Real-time quotes (구현 예정) | Finnhub | WebSocket | REST polling (5s interval) |
-| Streaming news (구현 예정) | Finnhub | WebSocket | REST polling (30s interval) |
+| Real-time quotes | Finnhub | WebSocket | REST polling (5s interval) |
+| Streaming news | Finnhub | WebSocket | REST polling (30s interval) |
 | Price/OHLCV | Finnhub | REST | yfinance |
 | Fundamental | Finnhub | REST | FMP, yfinance |
 | Macro | FRED | REST | World Bank |
@@ -163,7 +170,9 @@ For Live Mode, qracer needs sub-second price data and streaming news:
 | Short interest (planned) | FINRA | REST | Ortex (plugin) |
 | ETF flows (planned) | ETF.com | REST | — (plugin) |
 
-WebSocket connections are opened on session start during market hours and closed on session end. REST fallback activates automatically if WebSocket disconnects.
+WebSocket connections are opened when `qracer serve` starts and closed
+on shutdown. If the initial handshake fails, the server transparently
+falls back to REST polling via `AlertMonitor.check()`.
 
 API key missing → adapter auto-skipped. Fallback kicks in transparently. Provider availability is controlled entirely by `providers.toml` — no code changes needed to toggle sources.
 

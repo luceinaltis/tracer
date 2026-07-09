@@ -9,6 +9,7 @@ from qracer.data.providers import (
     NewsArticle,
     NewsProvider,
     PriceProvider,
+    StreamingProvider,
 )
 from qracer.data.registry import DataRegistry
 from qracer.data.yfinance_adapter import YfinanceAdapter
@@ -25,5 +26,6 @@ __all__ = [
     "NewsArticle",
     "NewsProvider",
     "PriceProvider",
+    "StreamingProvider",
     "YfinanceAdapter",
 ]
