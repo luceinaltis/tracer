@@ -10,9 +10,7 @@ from tests.helpers import FakeLLM
 
 
 class TestHandleRunAgents:
-    async def test_runs_enabled_agents_and_records(
-        self, tmp_path: Path, capsys
-    ) -> None:
+    async def test_runs_enabled_agents_and_records(self, tmp_path: Path, capsys) -> None:
         store = AgentStore(tmp_path / "agents.json")
         a = store.create("Alice", "openai/gpt-4o", "be helpful")
         store.create("Bob", "m", "p", enabled=False)  # disabled — skipped

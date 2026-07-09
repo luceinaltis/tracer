@@ -56,8 +56,12 @@ class TestAgentIsDue:
     def test_disabled_never_due(self) -> None:
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         a = Agent(
-            id="x", name="c", model="mod", prompt="p",
-            trigger_type=TriggerType.CONTINUOUS, enabled=False,
+            id="x",
+            name="c",
+            model="mod",
+            prompt="p",
+            trigger_type=TriggerType.CONTINUOUS,
+            enabled=False,
         )
         assert not a.is_due(now)
 
@@ -65,8 +69,13 @@ class TestAgentIsDue:
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
         past = (now - timedelta(minutes=1)).isoformat()
         a = Agent(
-            id="x", name="c", model="mod", prompt="p",
-            trigger_type=TriggerType.CRON, cron="*/5 * * * *", next_run_at=past,
+            id="x",
+            name="c",
+            model="mod",
+            prompt="p",
+            trigger_type=TriggerType.CRON,
+            cron="*/5 * * * *",
+            next_run_at=past,
         )
         assert a.is_due(now)
 
@@ -74,24 +83,31 @@ class TestAgentIsDue:
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
         future = (now + timedelta(minutes=1)).isoformat()
         a = Agent(
-            id="x", name="c", model="mod", prompt="p",
-            trigger_type=TriggerType.CRON, cron="*/5 * * * *", next_run_at=future,
+            id="x",
+            name="c",
+            model="mod",
+            prompt="p",
+            trigger_type=TriggerType.CRON,
+            cron="*/5 * * * *",
+            next_run_at=future,
         )
         assert not a.is_due(now)
 
     def test_continuous_due_first_time(self) -> None:
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-        a = Agent(
-            id="x", name="c", model="mod", prompt="p", trigger_type=TriggerType.CONTINUOUS
-        )
+        a = Agent(id="x", name="c", model="mod", prompt="p", trigger_type=TriggerType.CONTINUOUS)
         assert a.is_due(now)
 
     def test_continuous_respects_cooldown(self) -> None:
         now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
         recent = (now - timedelta(seconds=10)).isoformat()
         a = Agent(
-            id="x", name="c", model="mod", prompt="p",
-            trigger_type=TriggerType.CONTINUOUS, last_run_at=recent,
+            id="x",
+            name="c",
+            model="mod",
+            prompt="p",
+            trigger_type=TriggerType.CONTINUOUS,
+            last_run_at=recent,
         )
         assert not a.is_due(now, continuous_cooldown=60)
         assert a.is_due(now, continuous_cooldown=5)
@@ -113,9 +129,7 @@ class TestAgentStore:
 
     def test_create_cron_computes_next_run(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
-        a = store.create(
-            "Cronny", "m", "p", trigger_type=TriggerType.CRON, cron="*/5 * * * *"
-        )
+        a = store.create("Cronny", "m", "p", trigger_type=TriggerType.CRON, cron="*/5 * * * *")
         assert a.next_run_at is not None
 
     def test_create_cron_invalid_raises(self, tmp_path: Path) -> None:
@@ -236,8 +250,11 @@ class TestAgentStore:
     def test_persistence_round_trip(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         a = store.create(
-            "A", "openai/gpt-4o", "prompt text",
-            trigger_type=TriggerType.CRON, cron="0 9 * * *",
+            "A",
+            "openai/gpt-4o",
+            "prompt text",
+            trigger_type=TriggerType.CRON,
+            cron="0 9 * * *",
         )
         reloaded = AgentStore(tmp_path / "agents.json")
         got = reloaded.get(a.id)

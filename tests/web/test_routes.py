@@ -200,9 +200,7 @@ class TestAgentUI:
         # NiceGUI owns "/", but the JSON API must remain intact.
         assert client.get("/api/health").status_code == 200
 
-    def test_index_page_served(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_index_page_served(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Guard against any accidental network call from the catalog fetch.
         monkeypatch.setattr("qracer.web.ui.list_models", lambda *a, **k: [])
         app = create_app(user_dir=tmp_path)

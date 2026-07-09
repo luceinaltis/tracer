@@ -234,9 +234,7 @@ class AgentStore:
         """Return agents that should run now (cron due or continuous off cooldown)."""
         self._maybe_reload()
         ref = now or datetime.now(timezone.utc)
-        return [
-            a for a in self._agents if a.is_due(ref, continuous_cooldown=continuous_cooldown)
-        ]
+        return [a for a in self._agents if a.is_due(ref, continuous_cooldown=continuous_cooldown)]
 
     def record_run(
         self,

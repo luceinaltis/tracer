@@ -53,9 +53,7 @@ def mount(app: "FastAPI", base_dir: Path) -> None:
         models = _model_options()  # cached; fetched on first render, not at mount
         agents = store.agents
         if not agents:
-            ui.label("No agents yet. Click “Add agent” to create one.").classes(
-                "text-gray-500"
-            )
+            ui.label("No agents yet. Click “Add agent” to create one.").classes("text-gray-500")
         for agent in agents:
             with ui.card().classes("w-full"):
                 name = ui.input("Name", value=agent.name).classes("w-full")
@@ -64,15 +62,11 @@ def mount(app: "FastAPI", base_dir: Path) -> None:
                         models, value=agent.model, label="Model", with_input=True
                     ).classes("w-full")
                 else:
-                    model = ui.input("Model (OpenRouter id)", value=agent.model).classes(
-                        "w-full"
-                    )
+                    model = ui.input("Model (OpenRouter id)", value=agent.model).classes("w-full")
                 prompt = ui.textarea("Prompt", value=agent.prompt).classes("w-full")
 
                 with ui.row().classes("items-center gap-4 w-full"):
-                    trigger = ui.select(
-                        _TRIGGERS, value=agent.trigger_type.value, label="Trigger"
-                    )
+                    trigger = ui.select(_TRIGGERS, value=agent.trigger_type.value, label="Trigger")
                     cron = ui.input("cron", value=agent.cron or "").props("dense")
                     cron.bind_visibility_from(
                         trigger, "value", lambda v: v == TriggerType.CRON.value
@@ -81,10 +75,17 @@ def mount(app: "FastAPI", base_dir: Path) -> None:
 
                 with ui.row().classes("gap-2"):
 
-                    def save(a=agent, name=name, model=model, prompt=prompt,
-                             trigger=trigger, cron=cron, enabled=enabled) -> None:
+                    def save(
+                        a=agent,
+                        name=name,
+                        model=model,
+                        prompt=prompt,
+                        trigger=trigger,
+                        cron=cron,
+                        enabled=enabled,
+                    ) -> None:
                         trig = trigger.value
-                        cron_val = cron.value.strip() or None
+                        cron_val = (cron.value or "").strip() or None
                         if trig == TriggerType.CRON.value and not validate_cron(cron_val or ""):
                             ui.notify(f"Invalid cron: {cron_val!r}", type="negative")
                             return
