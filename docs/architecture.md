@@ -77,19 +77,61 @@ Project-local and user configs merge per file: `./.qracer/providers.toml` define
 
 ## Provider Plugin System
 
-> **구현 예정** — 현재는 `provider_catalog.py` 기반 하드코딩 방식으로 동작합니다.
-
-Built-in adapters and external plugins share the same `ProviderPlugin` protocol. Lifecycle methods (`initialize`, `health_check`, `shutdown`) require DataRegistry updates — tracked separately from current implementation.
+Built-in adapters and external plugins share the same capability protocols
+(`PriceProvider`, `NewsProvider`, …) and are registered from the same
+`providers.toml` config.  Adapters may additionally implement the optional
+`LifecycleProvider` protocol to opt into per-provider `initialize`,
+`health_check`, and `shutdown` hooks — invoked by `_build_registries()` at
+startup and by `qracer serve` on shutdown.
 
 ```python
-class ProviderPlugin(Protocol):
-    name: str
-    capabilities: list[Capability]
-    tier: Tier  # hot | warm | cold
-
-    async def initialize(self, config: ProviderConfig) -> None: ...
+# qracer/provider_lifecycle.py
+@runtime_checkable
+class LifecycleProvider(Protocol):
+    async def initialize(self) -> None: ...
     async def health_check(self) -> bool: ...
     async def shutdown(self) -> None: ...
+```
+
+All three methods are optional — adapters without them are treated as
+always-healthy and require no teardown.  A provider that raises in
+`initialize()` or returns `False` from `health_check()` is excluded from the
+registry with a warning instead of crashing the process.
+
+### Example third-party adapter
+
+```python
+# qracer_polygon/adapter.py
+class PolygonAdapter:
+    """External data provider with graceful lifecycle management."""
+
+    def __init__(self, api_key: str | None = None) -> None:
+        self._api_key = api_key
+        self._session: httpx.AsyncClient | None = None
+
+    async def initialize(self) -> None:
+        self._session = httpx.AsyncClient(timeout=10.0)
+
+    async def health_check(self) -> bool:
+        if self._session is None:
+            return False
+        resp = await self._session.get("https://api.polygon.io/v1/status")
+        return resp.status_code == 200
+
+    async def shutdown(self) -> None:
+        if self._session is not None:
+            await self._session.aclose()
+
+    async def get_price(self, ticker: str) -> float:
+        ...
+```
+
+Register it via the entry-point group:
+
+```toml
+# External package pyproject.toml
+[project.entry-points."qracer.data_providers"]
+polygon = "qracer_polygon.adapter:PolygonAdapter"
 ```
 
 ### Built-in vs Plugin
@@ -109,15 +151,22 @@ External plugins register via Python entry points:
 bloomberg = "qracer_bloomberg.adapter:BloombergAdapter"
 ```
 
-On startup the registry scans entry points, loads `providers.toml` config, checks credentials, and registers enabled providers. This replaces the current hardcoded `_build_registries()` approach — significant implementation work tracked separately.
+On startup `_build_registries()` scans entry points, loads `providers.toml`,
+checks credentials, runs each adapter's optional `initialize()` +
+`health_check()` hooks, and registers the enabled/healthy providers.
 
 ```text
 App start
-  → entry_points("qracer.providers") scan
-  → providers.toml config load
+  → entry_points("qracer.data_providers") + entry_points("qracer.llm_providers") scan
+  → providers.toml config load (enabled, priority, api_key_env)
   → credentials.env check per provider
   → Missing API key → skip with warning log
-  → Register enabled providers by priority
+  → Optional initialize() + health_check() → unhealthy ⇒ skip with warning
+  → Register surviving providers by priority
+
+qracer serve exit
+  → shutdown_all_providers(data_registry, llm_registry)
+  → Exceptions from shutdown() are logged, never propagated
 ```
 
 ### `providers.toml` Example
