@@ -36,6 +36,7 @@ from qracer.conversation.synthesizer import ComparisonSynthesizer, ResponseSynth
 from qracer.data.registry import DataRegistry
 from qracer.llm.registry import LLMRegistry
 from qracer.memory.fact_store import FactStore
+from qracer.memory.finding_extractor import extract_findings
 from qracer.memory.memory_searcher import MemorySearcher
 from qracer.memory.session_compactor import SessionCompactor
 from qracer.memory.session_logger import SessionLogger, TurnRecord
@@ -330,9 +331,32 @@ class ConversationEngine:
 
     def _persist_facts(self, analysis: AnalysisResult) -> None:
         """Extract and persist structured facts from analysis results."""
-        if self._fact_store is None or analysis.trade_thesis is None:
+        if self._fact_store is None:
             return
-        try:
-            self._fact_store.save_thesis(analysis.trade_thesis, self._session_id)
-        except Exception:
-            logger.warning("Failed to persist thesis to fact store", exc_info=True)
+        if analysis.trade_thesis is not None:
+            try:
+                self._fact_store.save_thesis(analysis.trade_thesis, self._session_id)
+            except Exception:
+                logger.warning("Failed to persist thesis to fact store", exc_info=True)
+
+        # Extract and persist discrete findings from every successful tool
+        # result.  Each tool-level failure is isolated so a bad payload for
+        # one tool never prevents findings from other tools being saved.
+        for result in analysis.results:
+            for draft in extract_findings(result):
+                try:
+                    self._fact_store.save_finding(
+                        entity=draft.entity,
+                        statement=draft.statement,
+                        confidence=draft.confidence,
+                        source_tool=draft.source_tool,
+                        session_id=self._session_id,
+                        event_date=draft.event_date,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist finding (tool=%s entity=%s)",
+                        draft.source_tool,
+                        draft.entity,
+                        exc_info=True,
+                    )

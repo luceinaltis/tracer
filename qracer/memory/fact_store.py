@@ -17,7 +17,7 @@ from pathlib import Path
 
 import duckdb
 
-from qracer.memory.fact_models import PersistedThesis, ThesisStatus
+from qracer.memory.fact_models import Finding, PersistedThesis, ThesisStatus
 from qracer.models.base import TradeThesis
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,21 @@ CREATE TABLE IF NOT EXISTS theses (
     updated_at        TIMESTAMP NOT NULL,
     superseded_by     INTEGER
 );
+
+CREATE SEQUENCE IF NOT EXISTS finding_id_seq START 1;
+
+CREATE TABLE IF NOT EXISTS findings (
+    id          INTEGER PRIMARY KEY DEFAULT nextval('finding_id_seq'),
+    entity      VARCHAR NOT NULL,
+    statement   VARCHAR NOT NULL,
+    confidence  DOUBLE NOT NULL,
+    source_tool VARCHAR NOT NULL,
+    session_id  VARCHAR NOT NULL,
+    event_date  VARCHAR,
+    created_at  TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_entity ON findings(entity);
 """
 
 
@@ -241,6 +256,73 @@ class FactStore:
             "UPDATE theses SET status = ?, superseded_by = ?, updated_at = ? WHERE id = ?",
             [status.value, superseded_by, datetime.now(), thesis_id],
         )
+
+    # ------------------------------------------------------------------
+    # Finding CRUD
+    # ------------------------------------------------------------------
+
+    def save_finding(
+        self,
+        *,
+        entity: str,
+        statement: str,
+        confidence: float,
+        source_tool: str,
+        session_id: str,
+        event_date: str | None = None,
+    ) -> int:
+        """Persist a Finding and return its new id.
+
+        Confidence is clamped to the ``[0.0, 1.0]`` range; upstream extractors
+        may emit out-of-range values when parsing noisy inputs.
+        """
+        clamped_confidence = max(0.0, min(1.0, float(confidence)))
+        self._conn.execute(
+            """
+            INSERT INTO findings (
+                entity, statement, confidence, source_tool,
+                session_id, event_date, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                entity,
+                statement,
+                clamped_confidence,
+                source_tool,
+                session_id,
+                event_date,
+                datetime.now(),
+            ],
+        )
+        new_id: int = self._conn.execute("SELECT currval('finding_id_seq')").fetchone()[0]  # type: ignore[index]
+        return new_id
+
+    def get_findings(self, entity: str, limit: int = 20) -> list[Finding]:
+        """Return findings for *entity* ordered most-recent first."""
+        rows = self._conn.execute(
+            """
+            SELECT id, entity, statement, confidence, source_tool,
+                   session_id, event_date, created_at
+            FROM findings
+            WHERE entity = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [entity, limit],
+        ).fetchall()
+        return [
+            Finding(
+                id=row[0],
+                entity=row[1],
+                statement=row[2],
+                confidence=row[3],
+                source_tool=row[4],
+                session_id=row[5],
+                event_date=row[6],
+                created_at=row[7],
+            )
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------
     # Lifecycle
