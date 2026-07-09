@@ -182,6 +182,9 @@ class AgentStore:
         if agent is None:
             return None
 
+        prev_trigger = agent.trigger_type
+        prev_cron = agent.cron
+
         allowed = {"name", "model", "prompt", "enabled", "trigger_type", "cron"}
         for key, value in fields.items():
             if key not in allowed:
@@ -193,7 +196,13 @@ class AgentStore:
         if agent.trigger_type == TriggerType.CRON:
             if not validate_cron(agent.cron or ""):
                 raise ValueError(f"Invalid cron expression: {agent.cron!r}")
-            agent.next_run_at = compute_cron_next(cast(str, agent.cron), datetime.now(timezone.utc))
+            # Only (re)compute the schedule when the trigger/cron actually changed,
+            # so unrelated edits (name, enabled, prompt) don't delay an imminent run.
+            schedule_changed = prev_trigger != TriggerType.CRON or prev_cron != agent.cron
+            if schedule_changed or not agent.next_run_at:
+                agent.next_run_at = compute_cron_next(
+                    cast(str, agent.cron), datetime.now(timezone.utc)
+                )
         else:
             agent.next_run_at = None
 

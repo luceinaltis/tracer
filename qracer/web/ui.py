@@ -34,9 +34,11 @@ def _model_options() -> list[str]:
     if _model_cache is None:
         try:
             _model_cache = [m.id for m in list_models()]
-        except OSError:
-            logger.warning("Could not fetch OpenRouter model catalog")
-            _model_cache = []
+        except Exception:  # noqa: BLE001 - network/JSON/HTML errors all degrade the same way
+            # Don't cache a transient failure: leave the cache empty so the next
+            # render retries. Callers fall back to a free-text model input.
+            logger.warning("Could not fetch OpenRouter model catalog", exc_info=True)
+            return []
     return _model_cache
 
 

@@ -702,7 +702,8 @@ async def _repl_loop(
             continue
 
         # Custom agents: run all enabled agents now (ad-hoc), ignoring schedule.
-        if cmd == "/run" or cmd.startswith(("run ", "/run ")):
+        # Slash-form only: "run" is a common query verb ("run a DCF on TSLA").
+        if cmd == "/run" or cmd.startswith("/run "):
             await _handle_run_agents(user_input, agent_store, agent_provider)
             continue
 
@@ -722,6 +723,16 @@ async def _repl_loop(
             logger.exception("Error processing query")
             click.echo(f"Something went wrong: {type(exc).__name__}")
             click.echo("Hint: try rephrasing your query or check 'qracer status'.\n")
+
+
+def _report_agent_results(results: object, store: object) -> None:
+    """Print each agent result and persist it so the web UI can show it."""
+    for r in results:  # type: ignore[attr-defined]
+        click.echo(f"\n── {r.name} [{r.model}] ──")
+        click.echo(r.output if r.ok else f"(error) {r.error}")
+        store.record_run(  # type: ignore[attr-defined]
+            r.agent_id, output=r.output if r.ok else None, error=r.error
+        )
 
 
 async def _handle_run_agents(
@@ -751,12 +762,7 @@ async def _handle_run_agents(
 
     click.echo(f"Running {len(agents)} agent(s)...")
     results = await run_agents(agents, agent_provider, user_input=query)  # type: ignore[arg-type]
-    for r in results:
-        click.echo(f"\n── {r.name} [{r.model}] ──")
-        click.echo(r.output if r.ok else f"(error) {r.error}")
-        agent_store.record_run(
-            r.agent_id, output=r.output if r.ok else None, error=r.error
-        )
+    _report_agent_results(results, agent_store)
     click.echo()
 
 
@@ -1227,10 +1233,7 @@ def run(query: str | None, agent_name: str | None) -> None:
 
     click.echo(f"Running {len(agents)} agent(s)...")
     results = asyncio.run(run_agents(agents, provider, user_input=query))  # type: ignore[arg-type]
-    for r in results:
-        click.echo(f"\n── {r.name} [{r.model}] ──")
-        click.echo(r.output if r.ok else f"(error) {r.error}")
-        store.record_run(r.agent_id, output=r.output if r.ok else None, error=r.error)
+    _report_agent_results(results, store)
 
 
 # ---------------------------------------------------------------------------

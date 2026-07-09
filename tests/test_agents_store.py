@@ -139,6 +139,21 @@ class TestAgentStore:
         assert updated is not None
         assert updated.next_run_at is not None
 
+    def test_update_unrelated_edit_preserves_cron_next_run(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        a = store.create("A", "m", "p", trigger_type=TriggerType.CRON, cron="0 9 * * *")
+        before = store.get(a.id).next_run_at  # type: ignore[union-attr]
+        # Editing name/enabled must NOT push back the schedule.
+        store.update(a.id, name="renamed", enabled=False)
+        assert store.get(a.id).next_run_at == before  # type: ignore[union-attr]
+
+    def test_update_changing_cron_recomputes_next_run(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        a = store.create("A", "m", "p", trigger_type=TriggerType.CRON, cron="0 9 * * *")
+        before = store.get(a.id).next_run_at  # type: ignore[union-attr]
+        store.update(a.id, cron="30 14 * * *")
+        assert store.get(a.id).next_run_at != before  # type: ignore[union-attr]
+
     def test_update_switch_away_from_cron_clears_next_run(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         a = store.create("A", "m", "p", trigger_type=TriggerType.CRON, cron="0 * * * *")
