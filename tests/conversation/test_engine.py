@@ -66,7 +66,32 @@ class TestInvokeTool:
         with patch("qracer.conversation.dispatcher.pipeline") as mock_pipeline:
             mock_pipeline.memory_search = AsyncMock(return_value=_ok_result("memory_search"))
             await invoke_tool("memory_search", intent, registry)
-            mock_pipeline.memory_search.assert_called_once_with("what about before?", searcher=None)
+            mock_pipeline.memory_search.assert_called_once_with(
+                "what about before?",
+                searcher=None,
+                fact_store=None,
+                tickers=[],
+            )
+
+    async def test_memory_search_forwards_fact_store_and_tickers(self) -> None:
+        """Dispatcher should pass fact_store + intent.tickers into memory_search."""
+        from qracer.memory.fact_store import FactStore
+
+        intent = Intent(IntentType.FOLLOW_UP, tickers=["AAPL"], raw_query="how's AAPL doing?")
+        registry = DataRegistry()
+        store = FactStore()
+        try:
+            with patch("qracer.conversation.dispatcher.pipeline") as mock_pipeline:
+                mock_pipeline.memory_search = AsyncMock(return_value=_ok_result("memory_search"))
+                await invoke_tool("memory_search", intent, registry, fact_store=store)
+                mock_pipeline.memory_search.assert_called_once_with(
+                    "how's AAPL doing?",
+                    searcher=None,
+                    fact_store=store,
+                    tickers=["AAPL"],
+                )
+        finally:
+            store.close()
 
     async def test_tool_without_tickers_returns_failure(self) -> None:
         intent = Intent(IntentType.EVENT_ANALYSIS, tickers=[], raw_query="test")

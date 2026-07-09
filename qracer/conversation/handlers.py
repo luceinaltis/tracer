@@ -103,7 +103,11 @@ class QuickPathHandler:
 
     async def handle(self, intent: Intent) -> HandlerResult:
         results = await invoke_tools(
-            intent.tools, intent, self._data, memory_searcher=self._memory_searcher
+            intent.tools,
+            intent,
+            self._data,
+            memory_searcher=self._memory_searcher,
+            fact_store=self._fact_store,
         )
         text = format_quickpath(intent, results, language=self._language)
 
@@ -125,10 +129,13 @@ class ComparisonHandler:
         data_registry: DataRegistry,
         synthesizer: ComparisonSynthesizer,
         memory_searcher: MemorySearcher | None = None,
+        *,
+        fact_store: FactStore | None = None,
     ) -> None:
         self._data = data_registry
         self._synthesizer = synthesizer
         self._memory_searcher = memory_searcher
+        self._fact_store = fact_store
 
     async def handle(self, intent: Intent) -> HandlerResult:
         single_intents = [
@@ -142,7 +149,13 @@ class ComparisonHandler:
         ]
         gathered = await asyncio.gather(
             *[
-                invoke_tools(si.tools, si, self._data, memory_searcher=self._memory_searcher)
+                invoke_tools(
+                    si.tools,
+                    si,
+                    self._data,
+                    memory_searcher=self._memory_searcher,
+                    fact_store=self._fact_store,
+                )
                 for si in single_intents
             ]
         )
@@ -178,7 +191,11 @@ class StandardHandler:
     async def handle(self, intent: Intent) -> HandlerResult:
         # Invoke initial pipeline tools.
         initial_results = await invoke_tools(
-            intent.tools, intent, self._data, memory_searcher=self._memory_searcher
+            intent.tools,
+            intent,
+            self._data,
+            memory_searcher=self._memory_searcher,
+            fact_store=self._fact_store,
         )
 
         # Inject open theses from fact store as prior evidence.
