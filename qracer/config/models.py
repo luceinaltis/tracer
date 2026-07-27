@@ -7,6 +7,16 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class BriefingConfig(BaseModel):
+    """config.toml [briefing] — AI-prioritized daily briefing pushed by `qracer serve`."""
+
+    enabled: bool = False
+    # cron expression (e.g. "0 8 * * 1-5" = weekday 08:00). Sent once per occurrence.
+    schedule: str = "0 8 * * 1-5"
+    timezone: str | None = None  # IANA tz (e.g. "America/New_York"); None = local
+    top_n: int = 5  # how many prioritized items to surface
+
+
 class AppConfig(BaseModel):
     """config.toml — global application settings."""
 
@@ -27,6 +37,9 @@ class AppConfig(BaseModel):
     autonomous_enabled: bool = True
     price_move_threshold_pct: float = 2.0
     alert_cooldown_minutes: int = 30
+
+    # Daily briefing ([briefing] table)
+    briefing: BriefingConfig = Field(default_factory=BriefingConfig)
 
 
 class ProviderConfig(BaseModel):

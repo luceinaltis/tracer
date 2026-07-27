@@ -20,6 +20,7 @@ class NotificationCategory(Enum):
     SECTOR_CONCENTRATION = "sector_concentration"
     RESEARCH_COMPLETE = "research_complete"
     AUTONOMOUS_MODE = "autonomous_mode"
+    DAILY_BRIEFING = "daily_briefing"
 
 
 @dataclass(frozen=True)

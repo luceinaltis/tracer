@@ -71,6 +71,28 @@ class TestServer:
         server = Server(monitor, executor, agent_monitor=agent_monitor)
         await server._tick()  # Should not raise
 
+    async def test_tick_runs_briefing_scheduler(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        scheduler = MagicMock()
+        scheduler.should_check.return_value = True
+        scheduler.check = AsyncMock(return_value="brief text")
+
+        server = Server(monitor, executor, briefing_scheduler=scheduler)
+        await server._tick()
+
+        scheduler.check.assert_called_once()
+
+    async def test_tick_handles_briefing_error_gracefully(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        scheduler = MagicMock()
+        scheduler.should_check.return_value = True
+        scheduler.check = AsyncMock(side_effect=RuntimeError("boom"))
+
+        server = Server(monitor, executor, briefing_scheduler=scheduler)
+        await server._tick()  # Should not raise
+
     async def test_tick_skips_when_not_due(self) -> None:
         monitor = _make_monitor()
         monitor.should_check.return_value = False

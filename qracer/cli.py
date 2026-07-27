@@ -9,14 +9,10 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import click
 
-if TYPE_CHECKING:
-    from qracer.data.registry import DataRegistry
-    from qracer.llm.registry import LLMRegistry
-
+from qracer.bootstrap import build_registries
 from qracer.config.loader import (
     _load_toml,
     _user_dir,
@@ -388,80 +384,9 @@ def _write_toml(path: Path, data: dict[str, object]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_registries() -> tuple[LLMRegistry, DataRegistry, list[str]]:
-    """Build LLM and data registries from providers.toml + provider catalog.
-
-    Returns ``(llm_registry, data_registry, warnings)`` where *warnings*
-    is a list of human-readable strings describing providers that could
-    not be loaded.
-    """
-    import importlib
-
-    from qracer.data.registry import DataRegistry
-    from qracer.llm.providers import Role
-    from qracer.llm.registry import LLMRegistry
-    from qracer.provider_catalog import discover_data_providers, discover_llm_providers
-
-    config = load_config()
-    llm_registry = LLMRegistry()
-    data_registry = DataRegistry()
-    warnings: list[str] = []
-
-    # Discover providers: built-ins + any installed entry-point plugins.
-    data_catalog = discover_data_providers()
-    llm_catalog = discover_llm_providers()
-
-    sorted_providers = sorted(
-        config.providers.providers.items(),
-        key=lambda item: item[1].priority,
-    )
-
-    for name, prov_cfg in sorted_providers:
-        if not prov_cfg.enabled:
-            continue
-
-        # Resolve API key (shared by data and llm paths)
-        api_key: str | None = None
-        if prov_cfg.api_key_env:
-            api_key = config.credentials.get(prov_cfg.api_key_env) or os.environ.get(
-                prov_cfg.api_key_env
-            )
-            if not api_key:
-                msg = f"{name}: {prov_cfg.api_key_env} not set — skipped"
-                warnings.append(msg)
-                logger.warning("Provider '%s' skipped: %s not set", name, prov_cfg.api_key_env)
-                continue
-
-        if prov_cfg.kind == "data" and name in data_catalog:
-            adapter_path, cap_paths = data_catalog[name]
-            try:
-                mod_path, cls_name = adapter_path.rsplit(".", 1)
-                adapter_cls = getattr(importlib.import_module(mod_path), cls_name)
-                adapter = adapter_cls(api_key=api_key) if api_key else adapter_cls()
-                caps = []
-                for cp in cap_paths:
-                    cp_mod, cp_name = cp.rsplit(".", 1)
-                    caps.append(getattr(importlib.import_module(cp_mod), cp_name))
-                data_registry.register(name, adapter, caps)
-            except Exception as exc:
-                msg = f"{name}: {exc}"
-                warnings.append(msg)
-                logger.warning("Data provider '%s' unavailable: %s", name, exc)
-
-        elif prov_cfg.kind == "llm" and name in llm_catalog:
-            adapter_path, role_values = llm_catalog[name]
-            try:
-                mod_path, cls_name = adapter_path.rsplit(".", 1)
-                adapter_cls = getattr(importlib.import_module(mod_path), cls_name)
-                adapter = adapter_cls(api_key=api_key)
-                roles = [Role(v) for v in role_values]
-                llm_registry.register(name, adapter, roles)
-            except Exception as exc:
-                msg = f"{name}: {exc}"
-                warnings.append(msg)
-                logger.warning("LLM provider '%s' unavailable: %s", name, exc)
-
-    return llm_registry, data_registry, warnings
+# Composition root moved to qracer.bootstrap so the web app can reuse it without a
+# cli ↔ web import cycle. Keep the private alias for the existing call sites.
+_build_registries = build_registries
 
 
 def _openrouter_provider(llm_registry: object) -> object | None:
@@ -478,12 +403,30 @@ def _openrouter_provider(llm_registry: object) -> object | None:
         return None
 
 
+def _build_briefing_composer(data_registry: object, llm_registry: object) -> object:
+    """Construct a BriefingComposer from the user's portfolio, watchlist, and fact store."""
+    from qracer.briefing import BriefingComposer
+    from qracer.memory.fact_store import FactStore
+    from qracer.watchlist import Watchlist
+
+    cfg = load_config()
+    return BriefingComposer(
+        data_registry,  # type: ignore[arg-type]
+        llm_registry,  # type: ignore[arg-type]
+        cfg.portfolio,
+        Watchlist(_user_dir() / "watchlist.json"),
+        FactStore(_user_dir() / "fact_store.duckdb"),
+        top_n=cfg.app.briefing.top_n,
+    )
+
+
 _HELP_TEXT = """\
 Available commands:
   save              Save last analysis as Markdown
   save json         Save last analysis as JSON
   save pdf          Save last analysis as PDF (requires qracer[pdf] extra)
   backtest          Backtest the last trade thesis against historical data
+  brief             AI-prioritized briefing from your portfolio/watchlist
   watchlist         Show watchlist with current prices
   watch TICKER      Add ticker to watchlist
   unwatch TICKER    Remove ticker from watchlist
@@ -519,6 +462,7 @@ async def _repl_loop(
     fact_store: object | None = None,
     agent_store: object | None = None,
     agent_provider: object | None = None,
+    briefing_composer: object | None = None,
 ) -> None:
     """Run the interactive read-eval-print loop."""
     from qracer.alert_monitor import AlertMonitor
@@ -707,6 +651,11 @@ async def _repl_loop(
             await _handle_run_agents(user_input, agent_store, agent_provider)
             continue
 
+        # Daily briefing preview (AI-prioritized).
+        if cmd in ("brief", "/brief"):
+            await _handle_brief(briefing_composer)
+            continue
+
         # Show progress while query is processing.
         click.echo("Analyzing...", nl=False)
         try:
@@ -764,6 +713,19 @@ async def _handle_run_agents(
     results = await run_agents(agents, agent_provider, user_input=query)  # type: ignore[arg-type]
     _report_agent_results(results, agent_store)
     click.echo()
+
+
+async def _handle_brief(briefing_composer: object | None) -> None:
+    """Compose and print an AI-prioritized briefing on demand."""
+    if briefing_composer is None:
+        click.echo("Briefing unavailable.\n")
+        return
+    click.echo("Composing briefing...")
+    text = await briefing_composer.compose()  # type: ignore[attr-defined]
+    click.echo("\r" + " " * 20 + "\r", nl=False)
+    click.echo(
+        (text or "No briefing yet — add holdings/watchlist tickers or run some analyses.") + "\n"
+    )
 
 
 async def _handle_backtest(engine: object, data_registry: object | None) -> None:
@@ -1169,6 +1131,7 @@ def repl() -> None:
 
     agent_store = AgentStore(_user_dir() / "agents.json")
     agent_provider = _openrouter_provider(llm_registry)
+    briefing_composer = _build_briefing_composer(data_registry, llm_registry)
 
     asyncio.run(
         _repl_loop(
@@ -1182,6 +1145,7 @@ def repl() -> None:
             fact_store=fact_store,
             agent_store=agent_store,
             agent_provider=agent_provider,
+            briefing_composer=briefing_composer,
         )
     )
 
@@ -1234,6 +1198,52 @@ def run(query: str | None, agent_name: str | None) -> None:
     click.echo(f"Running {len(agents)} agent(s)...")
     results = asyncio.run(run_agents(agents, provider, user_input=query))  # type: ignore[arg-type]
     _report_agent_results(results, store)
+
+
+# ---------------------------------------------------------------------------
+# qracer brief
+# ---------------------------------------------------------------------------
+
+
+@main.command()
+@click.option("--send", is_flag=True, help="Also push to configured notification channels.")
+def brief(send: bool) -> None:
+    """Compose an AI-prioritized briefing from your portfolio/watchlist and print it now."""
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    llm_registry, data_registry, warnings = _build_registries()
+    for warn in warnings:
+        click.echo(f"  ⚠ {warn}")
+
+    composer = _build_briefing_composer(data_registry, llm_registry)
+    text = asyncio.run(composer.compose())  # type: ignore[attr-defined]
+    if not text:
+        click.echo(
+            "No briefing yet — add holdings to portfolio.toml, tickers to your watchlist, "
+            "or run some analyses first."
+        )
+        return
+    click.echo(text)
+
+    if send:
+        from qracer.notifications.factory import build_notification_registry
+        from qracer.notifications.providers import Notification, NotificationCategory
+
+        cfg = load_config()
+        notifications = build_notification_registry(cfg.credentials)
+        if not notifications.channels:
+            click.echo("\n(no notification channels configured — not sent)")
+        else:
+            asyncio.run(
+                notifications.notify(
+                    Notification(
+                        category=NotificationCategory.DAILY_BRIEFING,
+                        title="Daily briefing",
+                        body=text,
+                    )
+                )
+            )
+            click.echo(f"\n(sent via {', '.join(notifications.channels)})")
 
 
 # ---------------------------------------------------------------------------
@@ -1321,12 +1331,37 @@ def serve(check_interval: int) -> None:
     elif len(agent_store) > 0:
         click.echo("  ⚠ Custom agents found but OpenRouter is not configured — agents disabled.")
 
+    # AI-prioritized daily briefing (pushed on a cron schedule).
+    briefing_scheduler = None
+    if app_cfg.briefing.enabled:
+        from qracer.briefing import BriefingScheduler
+
+        tz = None
+        if app_cfg.briefing.timezone:
+            from zoneinfo import ZoneInfo
+
+            try:
+                tz = ZoneInfo(app_cfg.briefing.timezone)
+            except Exception:
+                click.echo(f"  ⚠ Unknown briefing timezone: {app_cfg.briefing.timezone}")
+        composer = _build_briefing_composer(data_registry, llm_registry)
+        try:
+            briefing_scheduler = BriefingScheduler(
+                composer,  # type: ignore[arg-type]
+                notifications,
+                app_cfg.briefing.schedule,
+                timezone=tz,
+            )
+        except Exception as exc:  # invalid cron
+            click.echo(f"  ⚠ Briefing schedule invalid ({exc}) — briefing disabled.")
+
     server = Server(
         alert_monitor,
         task_executor,
         notifications,
         autonomous_monitor=autonomous_monitor,
         agent_monitor=agent_monitor,
+        briefing_scheduler=briefing_scheduler,
         telegram_poller=telegram_poller,
         tick_interval=1.0,
     )
@@ -1354,6 +1389,8 @@ def serve(check_interval: int) -> None:
             1 for a in agent_store.agents if a.enabled and a.trigger_type.value != "manual"
         )
         click.echo(f"  Custom agents: {scheduled} autonomous (cron/continuous) active")
+    if briefing_scheduler is not None:
+        click.echo(f"  Daily briefing: schedule '{app_cfg.briefing.schedule}'")
     click.echo("  Press Ctrl+C to stop.\n")
 
     try:
