@@ -1,128 +1,101 @@
 # Pipeline
 
-qracer has two pipelines. The IntentRouter selects which one handles each query.
-
-## LivePipeline (QuickPath)
-
-For market-hours conversational use. Target: **< 5 seconds end-to-end**.
+How a natural-language query becomes a response. Everything runs through
+`ConversationEngine.query()` (`conversation/engine.py`), which parses intent and
+routes to one of four handlers.
 
 ```text
-Query → IntentRouter → Tool (1-2 max) → Format → Response
+query
+  → extract context (last N turns)
+  → IntentParser.parse → Intent(type, tickers, tools, raw_query)
+  → route by intent type:
+        PORTFOLIO_CHECK        → PortfolioHandler
+        quick intents          → QuickPathHandler
+        COMPARISON (≥2 tickers) → ComparisonHandler
+        else                   → StandardHandler
+  → persist turn, maybe compact, persist thesis to FactStore
 ```
 
-### Flow
+## Handlers
 
-1. **IntentRouter** classifies the query into an intent type (single LLM call, or rule-based for common patterns like "price of X")
-2. **Tool dispatch**: 1-2 data tools execute in parallel. Only hot/warm-tier adapters.
-3. **Format**: Template-based response — no LLM call for simple lookups, one LLM call for summaries.
+### QuickPathHandler — template, no LLM
+Fast lookups (price, quick news). Fetches 1–2 tools and formats a template response.
+Target: sub-second. No LLM call.
 
-### Intent → Tool Mapping
+### PortfolioHandler — deterministic
+Prices → portfolio snapshot (`RiskCalculator`) → limit check → optional rebalance
+suggestion. No LLM narrative; pure math over `portfolio.toml` holdings.
 
-| Intent | Example | Tools | LLM Calls |
-|---|---|---|---|
-| `price_check` | "What's AAPL at?" | price_quote | 0 |
-| `quick_news` | "Any news on TSLA?" | news (cached) | 0–1 |
-| `comparison` | "AAPL vs MSFT P/E" | fundamentals | 0 |
-| `follow_up` | "What about Samsung?" | resolved from context → appropriate tool | 0–1 |
-| `opinion` | "Is NVDA overvalued?" | price_quote, fundamentals | 1 |
-| `macro_check` | "Where's the 10Y at?" | macro | 0 |
-| `alert_set` | "Tell me if AAPL drops below 170" | alert_register | 0 |
+### ComparisonHandler — per-ticker fan-out
+Builds one sub-intent per ticker, runs `invoke_tools` for each concurrently
+(`asyncio.gather`), then `ComparisonSynthesizer` renders a side-by-side table +
+verdict.
 
-### Latency Budget
+### StandardHandler — the deep path
+The full evidence → analysis → thesis → risk → synthesis flow:
 
-| Step | Budget |
-|---|---|
-| Intent classification | < 500ms (rule-based) or < 1.5s (LLM) |
-| Data fetch (parallel) | < 2s |
-| Response formatting | < 500ms (template) or < 1.5s (LLM) |
-| **Total** | **< 5s** |
+1. **Gather evidence** — `invoke_tools(intent.tools, …)` runs the intent's tools
+   concurrently, each returning a uniform `ToolResult`.
+2. **Prior theses** — open theses for the tickers are pulled from `FactStore` and
+   injected as additional evidence.
+3. **Analysis loop** — `AnalysisLoop.run(...)` (below) gathers more data until it is
+   confident enough or hits the iteration cap.
+4. **Trade thesis** — `pipeline.trade_thesis(...)` (STRATEGIST role) produces
+   `entry_zone`, `target`, `stop`, `risk_reward`, `catalyst`, `conviction` (1–10).
+5. **Risk check** — *only when a thesis exists and `portfolio.toml` has holdings*,
+   `pipeline.risk_check(...)` sizes the position via `RiskCalculator`
+   (see [risk-system.md](risk-system.md)).
+6. **Synthesize** — `ResponseSynthesizer` (STRATEGIST role) renders the final
+   report over the successful `ToolResult`s.
 
-If data fetch exceeds 2s, return partial data with a staleness note.
+## AnalysisLoop
 
-## ResearchPipeline (DeepPath)
+`conversation/analysis_loop.py`. Iterative data-sufficiency loop:
 
-Full 9-step analysis. Runs async — user is notified on completion.
+- Up to `MAX_ITERATIONS = 3`; exits when `confidence >= CONFIDENCE_THRESHOLD (0.7)`,
+  when no more tools are missing, or on the last iteration.
+- Bails early if ≥2 tools failed on iteration 0, or after 2 consecutive eval failures.
+- Each iteration asks the **ANALYST** role for `{confidence, missing_tools}`, then
+  fetches any missing tools and loops.
 
-```text
-Screening → Macro Regime → Cross-Market Discovery → Consensus Mapping
-    → Contrarian Detection → Conviction Scoring → Trade Thesis → Risk Check → Alpha Report
-```
+> `confidence` here is the LLM's self-rating of *data sufficiency* — it gates
+> data-gathering only. It is **not** the thesis `conviction`, and neither number is
+> statistically calibrated.
 
-### Step 1: Universe Screening
-- Filter by region, sector, market cap, liquidity
-- Agent: **researcher** | Data: PriceProvider, FundamentalProvider
+## Tools
 
-### Step 2: Macro Regime Detection
-- Determine regime: risk-on / risk-off / transition
-- Analyze rates, inflation, GDP, currencies
-- Agent: **analyst** | Data: MacroProvider
+`tools/pipeline.py` — thin async wrappers returning `ToolResult`. Selected by intent
+via `INTENT_TOOL_MAP` (`intent.py`) and dispatched by `dispatcher.py`.
 
-### Step 3: Cross-Market Discovery (core alpha)
-- Find information asymmetry across global markets
-- Detect leading indicators: Korea semi exports → US AI stocks, China property → commodities → AUD → BHP
-- Agent: **analyst** | Data: PriceProvider, MacroProvider, NewsProvider, AlternativeProvider
+| Tool | Source | Notes |
+|---|---|---|
+| `price_event` | PriceProvider | current price + OHLCV |
+| `news` | NewsProvider | 30-day window; sentiment not populated |
+| `insider` | AlternativeProvider | 90-day Finnhub insider transactions |
+| `fundamentals` | FundamentalProvider | PE, market cap, revenue, earnings, div yield |
+| `macro` | MacroProvider | FRED series |
+| `cross_market` | PriceProvider | fetches prices per ticker (no correlation computed) |
+| `trade_thesis` | LLM (STRATEGIST) | entry/target/stop/conviction — LLM-generated |
+| `risk_check` | RiskCalculator | sizing over live prices + portfolio |
+| `memory_search` | MemorySearcher | past-session retrieval |
 
-### Step 4: Consensus Mapping
-- Collect analyst ratings, news sentiment, institutional positioning, insider trades
-- Build consensus view per target
-- Agent: **researcher** | Data: NewsProvider, AlternativeProvider, FundamentalProvider
-
-### Step 5: Contrarian Detection (core alpha)
-- Compare Step 3 against Step 4 consensus
-- Find where consensus is wrong, late, or ignoring signals
-- Agent: **strategist** | Data: all providers
-
-### Step 6: Conviction Scoring
-- Score by strength, time horizon, risk
-- Output: ranked list with risk assessment
-- Agent: **strategist**
-
-### Step 7: Trade Thesis Generation
-- Convert analysis into structured, actionable output
-- Output fields: entry zone, target price, stop-loss, risk/reward ratio, catalyst + date, conviction (1-10)
-- Conviction score drives position sizing suggestion
-- Agent: **strategist**
-
-### Step 8: Risk Check
-- Consult risk module (see [risk-system.md](risk-system.md)) before finalizing recommendation
-- Check portfolio exposure: sector concentration, correlation to existing holdings, beta impact
-- Adjust position sizing based on current portfolio state
-- Hard limits enforced from `.qracer/portfolio.toml` (max single position %, max sector %)
-- Agent: **strategist** | Data: portfolio context
-
-### Step 9: Alpha Report
-- Generate full report: thesis, evidence, contrarian angle, risk factors, timeline
-- Include sized recommendation with entry/target/stop and risk/reward ratio
-- Agent: **reporter**
-
-```text
-Pipeline feedback loop:
-
-Data → Analysis → Thesis → Risk Check → Sized Recommendation
-                    ↑                          ↓
-                    └── Portfolio Context ──────┘
-```
-
-### Trigger Conditions
-
-ResearchPipeline runs when **any** of these are true:
-
-| Trigger | Example |
-|---|---|
-| Explicit request | "Run a full analysis on TSMC" |
-| `/deep` command | `/deep AAPL` |
-| `deep_dive` intent | "Give me everything on Samsung" |
-| `alpha_hunt` intent | "Where's the hidden alpha right now?" |
-| Scheduled (구현 예정) | Nightly batch run |
-
-Everything else goes through LivePipeline.
-
-## Error Handling
+## Error handling
 
 | Failure | Behavior |
 |---|---|
-| Tool timeout in LivePipeline | Return partial data with caveat |
-| Single tool fails | Exclude from evidence; note as "data unavailable" |
-| ≥2 tools fail in ResearchPipeline | Exit loop early; caveat lists missing data |
-| LLM call fails | Retry once; return partial result if still failing |
-| Rate limit hit | Serve from cache if available; otherwise caveat |
+| Single tool fails | excluded from evidence; noted as unavailable |
+| ≥2 tools fail on iteration 0 | analysis loop exits early with caveat |
+| LLM JSON parse fails | fall back to a safe default, warn |
+| No ticker resolvable | ask the user rather than guess |
+
+## Known gaps
+
+- No explicit **direction** field — the thesis assumes a long trade; sell/hold/avoid
+  are not produced.
+- `trade_thesis` numbers are LLM guesses with only an arithmetic risk/reward check —
+  there is no verification that they match the fetched data.
+- `risk_check` (and therefore sizing) is skipped entirely when no holdings are
+  configured.
+
+These are the focus of the investor-harness roadmap in
+[architecture.md](architecture.md).

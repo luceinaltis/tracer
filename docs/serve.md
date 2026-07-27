@@ -35,10 +35,14 @@ qracer serve --check-interval 10
 
 ## What it does
 
-Each tick (every 1 second, throttled by check intervals):
+Each tick (every 1 second, throttled by per-monitor check intervals):
 
-1. **Alert check**: Evaluates active price alerts → triggers notification on match
-2. **Task check**: Runs due scheduled tasks → notifies on failure
+1. **Alert check** (`AlertMonitor`): active price alerts → notify on match
+2. **Task check** (`TaskExecutor`): due scheduled tasks → notify on failure ([schedule.md](schedule.md))
+3. **Autonomous monitor** (`AutonomousMonitor`): during US market hours, scans the
+   watchlist for significant price moves / breaking news
+4. **Custom-agent monitor** (`AgentMonitor`): runs due cron/continuous custom agents
+   ([custom-agents.md](custom-agents.md))
 
 Notifications are sent via configured channels (e.g., Telegram). Configure in `~/.qracer/credentials.env`:
 ```bash
@@ -60,4 +64,6 @@ TELEGRAM_CHAT_ID=your-chat-id
 | `qracer/pidfile.py` | PID file acquire/release/check |
 | `qracer/tasks.py` | TaskStore with mtime hot-reload |
 | `qracer/alerts.py` | AlertStore with mtime hot-reload |
+| `qracer/autonomous.py` | AutonomousMonitor (market-hours watchlist scan) |
+| `qracer/agent_monitor.py` | AgentMonitor (custom agents) |
 | `qracer/notifications/` | Notification fan-out (Telegram, etc.) |
