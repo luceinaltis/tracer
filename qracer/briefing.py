@@ -207,8 +207,12 @@ class BriefingComposer:
 
     # -- ranking ------------------------------------------------------------
 
-    async def _rank(self, state: BriefingState) -> str:
-        provider = self._llm.get(Role.STRATEGIST)
+    async def _rank(self, state: BriefingState) -> str | None:
+        try:
+            provider = self._llm.get(Role.STRATEGIST)
+        except KeyError:
+            logger.warning("No STRATEGIST LLM provider configured — skipping briefing")
+            return None
         request = CompletionRequest(
             messages=[
                 Message(role="system", content=_SYSTEM_PROMPT.format(top_n=self._top_n)),

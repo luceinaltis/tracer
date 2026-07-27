@@ -403,19 +403,27 @@ def _openrouter_provider(llm_registry: object) -> object | None:
         return None
 
 
-def _build_briefing_composer(data_registry: object, llm_registry: object) -> object:
-    """Construct a BriefingComposer from the user's portfolio, watchlist, and fact store."""
+def _build_briefing_composer(
+    data_registry: object, llm_registry: object, fact_store: object | None = None
+) -> object:
+    """Construct a BriefingComposer from the user's portfolio, watchlist, and fact store.
+
+    Reuses *fact_store* when given — DuckDB refuses a second read-write handle to the
+    same file in one process, so callers that already opened a FactStore (e.g. the
+    REPL) must pass it in rather than let this open another.
+    """
     from qracer.briefing import BriefingComposer
     from qracer.memory.fact_store import FactStore
     from qracer.watchlist import Watchlist
 
     cfg = load_config()
+    fs = fact_store if fact_store is not None else FactStore(_user_dir() / "fact_store.duckdb")
     return BriefingComposer(
         data_registry,  # type: ignore[arg-type]
         llm_registry,  # type: ignore[arg-type]
         cfg.portfolio,
         Watchlist(_user_dir() / "watchlist.json"),
-        FactStore(_user_dir() / "fact_store.duckdb"),
+        fs,  # type: ignore[arg-type]
         top_n=cfg.app.briefing.top_n,
     )
 
@@ -1131,7 +1139,9 @@ def repl() -> None:
 
     agent_store = AgentStore(_user_dir() / "agents.json")
     agent_provider = _openrouter_provider(llm_registry)
-    briefing_composer = _build_briefing_composer(data_registry, llm_registry)
+    # Reuse the FactStore already opened above — a second DuckDB read-write handle to
+    # the same file in one process raises a lock conflict.
+    briefing_composer = _build_briefing_composer(data_registry, llm_registry, fact_store)
 
     asyncio.run(
         _repl_loop(

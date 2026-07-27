@@ -5,14 +5,18 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from qracer.briefing import BriefingComposer, BriefingScheduler
 from qracer.config.models import AppConfig, Holding, PortfolioConfig
-from qracer.notifications.providers import NotificationCategory
+from qracer.notifications.providers import Notification, NotificationCategory
 from qracer.watchlist import Watchlist
 from tests.helpers import make_data_registry, make_llm_registry
+
+if TYPE_CHECKING:
+    from qracer.notifications.registry import NotificationRegistry
 
 # ---------------------------------------------------------------------------
 # Stubs for the scheduler
@@ -32,11 +36,21 @@ class StubComposer:
 class StubNotifications:
     def __init__(self, channels: list[str]) -> None:
         self.channels = channels
-        self.sent: list[object] = []
+        self.sent: list[Notification] = []
 
-    async def notify(self, notification: object) -> dict:
+    async def notify(self, notification: Notification) -> dict:
         self.sent.append(notification)
         return {c: True for c in self.channels}
+
+
+def _sched(composer: object, notifications: object, cron: str, **kwargs: object):
+    """Construct a BriefingScheduler with test stubs (cast to the declared types)."""
+    return BriefingScheduler(
+        cast(BriefingComposer, composer),
+        cast("NotificationRegistry | None", notifications),
+        cron,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 def _watchlist(tmp_path: Path, *tickers: str) -> Watchlist:
@@ -59,7 +73,9 @@ class TestBriefingConfig:
         assert cfg.briefing.schedule
 
     def test_nested_from_toml_shape(self) -> None:
-        cfg = AppConfig(**{"briefing": {"enabled": True, "schedule": "0 9 * * *", "top_n": 3}})
+        cfg = AppConfig.model_validate(
+            {"briefing": {"enabled": True, "schedule": "0 9 * * *", "top_n": 3}}
+        )
         assert cfg.briefing.enabled is True
         assert cfg.briefing.schedule == "0 9 * * *"
         assert cfg.briefing.top_n == 3
@@ -100,6 +116,53 @@ class TestBriefingComposer:
         assert "WATCHLIST" in evidence
         assert "PORTFOLIO" not in evidence
 
+    async def test_no_strategist_provider_returns_none(self, tmp_path: Path) -> None:
+        # Holdings exist (has content), but no LLM is registered → graceful None,
+        # not an uncaught KeyError from LLMRegistry.get(STRATEGIST).
+        from qracer.llm.registry import LLMRegistry
+
+        data = make_data_registry()
+        portfolio = PortfolioConfig(holdings=[Holding(ticker="AAPL", shares=10, avg_cost=100.0)])
+        composer = BriefingComposer(data, LLMRegistry(), portfolio, _watchlist(tmp_path), None)
+        assert await composer.compose() is None
+
+    async def test_includes_open_theses_from_fact_store(self, tmp_path: Path) -> None:
+        from qracer.memory.fact_store import FactStore
+        from qracer.models.base import TradeThesis
+
+        fact_store = FactStore(tmp_path / "facts.duckdb")
+        try:
+            fact_store.save_thesis(
+                TradeThesis(
+                    ticker="AAPL",
+                    entry_zone=(100.0, 110.0),
+                    target_price=150.0,
+                    stop_loss=90.0,
+                    risk_reward_ratio=2.0,
+                    catalyst="Earnings beat",
+                    catalyst_date="2026-05-01",
+                    conviction=8,
+                    summary="Long AAPL into earnings.",
+                ),
+                session_id="sess-1",
+            )
+            llm_registry, fake = make_llm_registry(content="ranked")
+            portfolio = PortfolioConfig(
+                holdings=[Holding(ticker="AAPL", shares=10, avg_cost=100.0)]
+            )
+            composer = BriefingComposer(
+                make_data_registry(), llm_registry, portfolio, _watchlist(tmp_path), fact_store
+            )
+            text = await composer.compose()
+
+            assert text == "ranked"
+            evidence = fake.calls[0].messages[1].content
+            assert "OPEN THESES" in evidence
+            assert "AAPL LONG conviction 8/10" in evidence
+            assert "Earnings beat" in evidence and "2026-05-01" in evidence
+        finally:
+            fact_store.close()
+
     async def test_empty_state_returns_none(self, tmp_path: Path) -> None:
         from qracer.data.registry import DataRegistry
 
@@ -119,19 +182,17 @@ class TestBriefingComposer:
 class TestBriefingScheduler:
     def test_invalid_cron_raises(self) -> None:
         with pytest.raises(Exception):
-            BriefingScheduler(StubComposer("x"), StubNotifications([]), "not a cron")
+            _sched(StubComposer("x"), StubNotifications([]), "not a cron")
 
     def test_should_check_throttle(self) -> None:
-        sched = BriefingScheduler(
-            StubComposer("x"), StubNotifications([]), "* * * * *", check_interval=10_000
-        )
+        sched = _sched(StubComposer("x"), StubNotifications([]), "* * * * *", check_interval=10_000)
         assert sched.should_check() is True
         sched._last_check = time.monotonic()
         assert sched.should_check() is False
 
     async def test_no_fire_on_startup(self) -> None:
         comp = StubComposer("x")
-        sched = BriefingScheduler(comp, StubNotifications(["telegram"]), "0 8 * * *")
+        sched = _sched(comp, StubNotifications(["telegram"]), "0 8 * * *")
         # Fresh scheduler: _last_slot is already the current slot, so nothing new.
         assert await sched.check() is None
         assert comp.calls == 0
@@ -139,7 +200,7 @@ class TestBriefingScheduler:
     async def test_fires_once_per_slot_and_pushes(self) -> None:
         comp = StubComposer("brief text")
         notif = StubNotifications(["telegram"])
-        sched = BriefingScheduler(comp, notif, "* * * * *")
+        sched = _sched(comp, notif, "* * * * *")
         sched._last_slot = datetime(2000, 1, 1)  # force a newly-passed slot
 
         text = await sched.check()
@@ -154,7 +215,7 @@ class TestBriefingScheduler:
     async def test_no_channels_skips_push(self) -> None:
         comp = StubComposer("x")
         notif = StubNotifications([])
-        sched = BriefingScheduler(comp, notif, "* * * * *")
+        sched = _sched(comp, notif, "* * * * *")
         sched._last_slot = datetime(2000, 1, 1)
 
         assert await sched.check() == "x"  # composed and returned
@@ -163,7 +224,7 @@ class TestBriefingScheduler:
     async def test_empty_briefing_not_pushed(self) -> None:
         comp = StubComposer(None)
         notif = StubNotifications(["telegram"])
-        sched = BriefingScheduler(comp, notif, "* * * * *")
+        sched = _sched(comp, notif, "* * * * *")
         sched._last_slot = datetime(2000, 1, 1)
 
         assert await sched.check() is None

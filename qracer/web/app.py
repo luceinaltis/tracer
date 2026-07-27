@@ -40,9 +40,21 @@ def create_app(user_dir: Path | None = None) -> "FastAPI":
             "qracer.web requires FastAPI. Install with: pip install 'qracer[web]'"
         ) from exc
 
+    from contextlib import asynccontextmanager
+
     base_dir = user_dir if user_dir is not None else _user_dir()
 
-    app = FastAPI(title="qracer", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: "FastAPI"):
+        yield
+        # FactStore holds an open DuckDB connection; close it on shutdown so the file
+        # handle is released (important on Windows and for test temp-dir cleanup).
+        try:
+            app.state.fact_store.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+
+    app = FastAPI(title="qracer", version="0.1.0", lifespan=lifespan)
 
     # Shared, file-backed stores. Each store hot-reloads on mtime change so
     # mutations made by `qracer repl` or `qracer serve` are picked up.

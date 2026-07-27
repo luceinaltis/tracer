@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from qracer.config.loader import load_config
 from qracer.data.providers import PriceProvider
@@ -20,18 +21,96 @@ from qracer.data.providers import PriceProvider
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from qracer.alerts import Alert
+    from qracer.config.models import PortfolioConfig
     from qracer.data.registry import DataRegistry
     from qracer.llm.registry import LLMRegistry
-    from qracer.memory.fact_store import FactStore
+    from qracer.memory.fact_store import FactStore, PersistedThesis
+    from qracer.tasks import Task
 
 logger = logging.getLogger(__name__)
 
 REFRESH_SECONDS = 5.0
+_BRIEFING_TTL = 900.0  # reuse a composed briefing for 15 min (single-user tool)
+# Module-level cache so the LLM briefing isn't recomposed on every page load / viewer.
+_briefing_cache: dict[str, object] = {"text": None, "at": 0.0}
 
 
 def _catalyst_label(catalyst: str | None, catalyst_date: str | None) -> str:
     when = f" ({catalyst_date})" if catalyst_date else ""
     return f"{catalyst or '—'}{when}"
+
+
+# -- pure row builders (no NiceGUI): rendered by the page, unit-tested directly --
+
+
+def _portfolio_rows(
+    portfolio: "PortfolioConfig", prices: dict[str, float]
+) -> tuple[list[dict], float]:
+    """Return (holding rows, total value). Missing prices fall back to avg cost."""
+    holdings = portfolio.holdings
+    if not holdings:
+        return [], 0.0
+    from qracer.risk.calculator import RiskCalculator
+
+    price_map = {h.ticker: prices.get(h.ticker, h.avg_cost) for h in holdings}
+    snap = RiskCalculator(portfolio).build_snapshot(price_map)
+    rows: list[dict] = []
+    for h in snap.holdings:
+        pnl_sign = "+" if h.unrealized_pnl >= 0 else "-"
+        rows.append(
+            {
+                "ticker": h.ticker,
+                "shares": f"{h.shares:g}",
+                "price": f"${h.current_price:,.2f}",
+                "value": f"${h.market_value:,.0f}",
+                "weight": f"{h.weight_pct:.1f}%",
+                "pnl": f"{pnl_sign}{abs(h.unrealized_pnl_pct):.1f}%",
+            }
+        )
+    return rows, snap.total_value
+
+
+def _watchlist_rows(tickers: list[str], prices: dict[str, float]) -> list[dict]:
+    return [{"ticker": t, "price": f"${prices[t]:,.2f}" if t in prices else "—"} for t in tickers]
+
+
+def _alert_rows(alerts: "list[Alert]") -> list[dict]:
+    return [
+        {
+            "ticker": a.ticker,
+            "condition": a.condition.value,
+            "threshold": f"{a.threshold:g}",
+            "status": "active" if a.active else "triggered",
+        }
+        for a in alerts
+    ]
+
+
+def _task_rows(tasks: "list[Task]") -> list[dict]:
+    return [
+        {
+            "action": t.describe(),
+            "schedule": t.schedule_spec,
+            "status": t.status.value,
+            "next": t.next_run_at or "—",
+        }
+        for t in tasks
+    ]
+
+
+def _thesis_rows(theses: "list[PersistedThesis]") -> list[dict]:
+    return [
+        {
+            "ticker": t.ticker,
+            "dir": "LONG" if t.target_price >= t.entry_zone_high else "SHORT",
+            "conv": f"{t.conviction}/10",
+            "target": f"${t.target_price:,.2f}",
+            "stop": f"${t.stop_loss:,.2f}",
+            "catalyst": _catalyst_label(t.catalyst, t.catalyst_date),
+        }
+        for t in theses
+    ]
 
 
 async def _fetch_prices(
@@ -80,33 +159,9 @@ def mount(
 
         # -- section builders (each reads the shared price cache / stores) --------
 
-        def _portfolio_rows() -> tuple[list[dict], float]:
-            cfg = load_config()
-            holdings = cfg.portfolio.holdings
-            if not holdings:
-                return [], 0.0
-            from qracer.risk.calculator import RiskCalculator
-
-            price_map = {h.ticker: prices.get(h.ticker, h.avg_cost) for h in holdings}
-            snap = RiskCalculator(cfg.portfolio).build_snapshot(price_map)
-            rows = []
-            for h in snap.holdings:
-                pnl_sign = "+" if h.unrealized_pnl >= 0 else "-"
-                rows.append(
-                    {
-                        "ticker": h.ticker,
-                        "shares": f"{h.shares:g}",
-                        "price": f"${h.current_price:,.2f}",
-                        "value": f"${h.market_value:,.0f}",
-                        "weight": f"{h.weight_pct:.1f}%",
-                        "pnl": f"{pnl_sign}{abs(h.unrealized_pnl_pct):.1f}%",
-                    }
-                )
-            return rows, snap.total_value
-
         @ui.refreshable
         def overview() -> None:
-            rows, total = _portfolio_rows()
+            rows, total = _portfolio_rows(load_config().portfolio, prices)
             with ui.card().classes("w-full"):
                 ui.label("Portfolio").classes("font-bold")
                 if rows:
@@ -128,7 +183,9 @@ def mount(
             with ui.card().classes("w-full"):
                 with ui.row().classes("items-center gap-3"):
                     ui.label("Today's briefing").classes("font-bold")
-                    ui.button("Refresh", on_click=lambda: _load_briefing()).props("flat dense")
+                    ui.button("Refresh", on_click=lambda: _load_briefing(force=True)).props(
+                        "flat dense"
+                    )
                 if briefing["loading"]:
                     ui.label("Composing…").classes("text-gray-500")
                 elif briefing["text"]:
@@ -140,7 +197,7 @@ def mount(
 
         @ui.refreshable
         def portfolio_section() -> None:
-            rows, total = _portfolio_rows()
+            rows, total = _portfolio_rows(load_config().portfolio, prices)
             if not rows:
                 ui.label("No holdings. Add them to portfolio.toml.").classes("text-gray-500")
                 return
@@ -165,10 +222,7 @@ def mount(
                     "text-gray-500"
                 )
                 return
-            rows = [
-                {"ticker": t, "price": f"${prices[t]:,.2f}" if t in prices else "—"}
-                for t in watchlist.tickers
-            ]
+            rows = _watchlist_rows(list(watchlist.tickers), prices)
             ui.table(
                 columns=[
                     {"name": "ticker", "label": "Ticker", "field": "ticker"},
@@ -184,15 +238,7 @@ def mount(
             if not alerts:
                 ui.label("No alerts. Use 'qracer repl' → 'alert ...'.").classes("text-gray-500")
                 return
-            rows = [
-                {
-                    "ticker": a.ticker,
-                    "condition": a.condition.value,
-                    "threshold": f"{a.threshold:g}",
-                    "status": "active" if a.active else "triggered",
-                }
-                for a in alerts
-            ]
+            rows = _alert_rows(alerts)
             ui.table(
                 columns=[
                     {"name": "ticker", "label": "Ticker", "field": "ticker"},
@@ -212,15 +258,7 @@ def mount(
                     "text-gray-500"
                 )
                 return
-            rows = [
-                {
-                    "action": t.describe(),
-                    "schedule": t.schedule_spec,
-                    "status": t.status.value,
-                    "next": t.next_run_at or "—",
-                }
-                for t in tasks
-            ]
+            rows = _task_rows(tasks)
             ui.table(
                 columns=[
                     {"name": "action", "label": "Action", "field": "action"},
@@ -243,17 +281,7 @@ def mount(
                     "text-gray-500"
                 )
                 return
-            rows = [
-                {
-                    "ticker": t.ticker,
-                    "dir": "LONG" if t.target_price >= t.entry_zone_high else "SHORT",
-                    "conv": f"{t.conviction}/10",
-                    "target": f"${t.target_price:,.2f}",
-                    "stop": f"${t.stop_loss:,.2f}",
-                    "catalyst": _catalyst_label(t.catalyst, t.catalyst_date),
-                }
-                for t in theses
-            ]
+            rows = _thesis_rows(theses)
             ui.table(
                 columns=[
                     {"name": "ticker", "label": "Ticker", "field": "ticker"},
@@ -285,9 +313,15 @@ def mount(
             ):
                 section.refresh()
 
-        async def _load_briefing() -> None:
+        async def _load_briefing(force: bool = False) -> None:
             if data_registry is None or llm_registry is None:
                 briefing["text"] = None
+                overview.refresh()
+                return
+            # Reuse a recent briefing across page loads / viewers unless forced.
+            fresh = (time.monotonic() - cast(float, _briefing_cache["at"])) < _BRIEFING_TTL
+            if not force and _briefing_cache["text"] and fresh:
+                briefing["text"] = _briefing_cache["text"]
                 overview.refresh()
                 return
             briefing["loading"] = True
@@ -297,9 +331,18 @@ def mount(
 
                 cfg = load_config()
                 composer = BriefingComposer(
-                    data_registry, llm_registry, cfg.portfolio, watchlist, fact_store
+                    data_registry,
+                    llm_registry,
+                    cfg.portfolio,
+                    watchlist,
+                    fact_store,
+                    top_n=cfg.app.briefing.top_n,
                 )
-                briefing["text"] = await composer.compose()
+                text = await composer.compose()
+                briefing["text"] = text
+                if text:
+                    _briefing_cache["text"] = text
+                    _briefing_cache["at"] = time.monotonic()
             except Exception:  # noqa: BLE001 - surface as "unavailable", don't crash the page
                 logger.warning("Briefing compose failed", exc_info=True)
                 briefing["text"] = None
@@ -334,8 +377,10 @@ def mount(
             with ui.tab_panel(t_theses):
                 theses_section()
 
-        await refresh_all()
-        asyncio.create_task(_load_briefing())
+        # Populate off the render path so the page shows immediately, and let NiceGUI
+        # own the tasks (a bare asyncio.create_task result can be garbage-collected).
+        ui.timer(0.1, refresh_all, once=True)
+        ui.timer(0.3, _load_briefing, once=True)
         ui.timer(REFRESH_SECONDS, refresh_all)
 
     ui.run_with(app, storage_secret="qracer-dashboard")
