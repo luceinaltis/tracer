@@ -189,18 +189,23 @@ class TestPortfolioRoute:
         assert holding["weight_pct"] == pytest.approx(100.0)
 
 
-class TestAgentUI:
-    def test_agent_store_attached(self, tmp_path: Path) -> None:
+class TestDashboardUI:
+    def test_stores_and_registries_attached(self, tmp_path: Path) -> None:
         from qracer.agents_store import AgentStore
+        from qracer.memory.fact_store import FactStore
 
         app = create_app(user_dir=tmp_path)
         assert isinstance(app.state.agent_store, AgentStore)
+        assert isinstance(app.state.fact_store, FactStore)
+        # Registries are attached (may be empty/None if no providers configured).
+        assert hasattr(app.state, "data_registry")
+        assert hasattr(app.state, "llm_registry")
 
     def test_api_still_works_with_ui_mounted(self, client: TestClient) -> None:
         # NiceGUI owns "/", but the JSON API must remain intact.
         assert client.get("/api/health").status_code == 200
 
-    def test_index_page_served(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_dashboard_page_served(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Guard against any accidental network call from the catalog fetch.
         monkeypatch.setattr("qracer.web.ui.list_models", lambda *a, **k: [])
         app = create_app(user_dir=tmp_path)

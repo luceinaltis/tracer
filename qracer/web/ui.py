@@ -13,13 +13,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from qracer.agents_store import AgentStore, TriggerType, validate_cron
 from qracer.llm.openrouter_adapter import list_models
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +38,12 @@ def _model_options() -> list[str]:
     return _model_cache
 
 
-def mount(app: "FastAPI", base_dir: Path) -> None:
-    """Register the NiceGUI agent config page and attach it to *app*."""
+def render_agents_section(base_dir: Path) -> None:
+    """Render the custom-agent config + results UI into the current NiceGUI context.
+
+    This is the one editable dashboard section: it reads and writes the file-backed
+    :class:`AgentStore` directly (no REST round-trip). Called by the dashboard page.
+    """
     from nicegui import ui
 
     store = AgentStore(base_dir / "agents.json")
@@ -138,21 +138,16 @@ def mount(app: "FastAPI", base_dir: Path) -> None:
                 else:
                     ui.label("(not run yet)").classes("text-gray-400")
 
-    @ui.page("/")
-    def index() -> None:
-        ui.label("qracer — Custom Agents").classes("text-2xl font-bold")
-        with ui.tabs() as tabs:
-            config_tab = ui.tab("Agents")
-            results_tab = ui.tab("Results")
-        with ui.tab_panels(tabs, value=config_tab).classes("w-full"):
-            with ui.tab_panel(config_tab):
-                ui.button("Add agent", on_click=add_agent).props("color=primary")
-                agent_cards()
-            with ui.tab_panel(results_tab):
-                ui.button("Refresh", on_click=result_rows.refresh).props("flat")
-                result_rows()
-
-    ui.run_with(app, storage_secret="qracer-agents")
+    with ui.tabs() as tabs:
+        config_tab = ui.tab("Config")
+        results_tab = ui.tab("Results")
+    with ui.tab_panels(tabs, value=config_tab).classes("w-full"):
+        with ui.tab_panel(config_tab):
+            ui.button("Add agent", on_click=add_agent).props("color=primary")
+            agent_cards()
+        with ui.tab_panel(results_tab):
+            ui.button("Refresh", on_click=result_rows.refresh).props("flat")
+            result_rows()
 
 
-__all__ = ["mount"]
+__all__ = ["render_agents_section"]

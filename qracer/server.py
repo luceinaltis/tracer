@@ -14,6 +14,7 @@ from qracer.agent_monitor import AgentMonitor
 from qracer.alert_monitor import AlertMonitor
 from qracer.alerts import AlertCondition
 from qracer.autonomous import AutonomousMonitor
+from qracer.briefing import BriefingScheduler
 from qracer.notifications.providers import Notification, NotificationCategory
 from qracer.notifications.registry import NotificationRegistry
 from qracer.notifications.telegram_poller import BotCommand, TelegramBotPoller
@@ -41,6 +42,7 @@ class Server:
         *,
         autonomous_monitor: AutonomousMonitor | None = None,
         agent_monitor: AgentMonitor | None = None,
+        briefing_scheduler: "BriefingScheduler | None" = None,
         telegram_poller: TelegramBotPoller | None = None,
         tick_interval: float = 1.0,
     ) -> None:
@@ -48,6 +50,7 @@ class Server:
         self._task_executor = task_executor
         self._autonomous_monitor = autonomous_monitor
         self._agent_monitor = agent_monitor
+        self._briefing_scheduler = briefing_scheduler
         self._notifications = notifications or NotificationRegistry()
         self._telegram_poller = telegram_poller
         self._tick_interval = tick_interval
@@ -125,6 +128,14 @@ class Server:
                         logger.warning("Agent failed: %s — %s", ar.name, ar.error)
             except Exception:
                 logger.debug("Agent check failed", exc_info=True)
+
+        if self._briefing_scheduler and self._briefing_scheduler.should_check():
+            try:
+                sent = await self._briefing_scheduler.check()
+                if sent:
+                    logger.info("Daily briefing pushed")
+            except Exception:
+                logger.debug("Briefing check failed", exc_info=True)
 
         if self._telegram_poller is not None:
             try:

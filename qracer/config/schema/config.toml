@@ -18,3 +18,11 @@ staleness_hours = 24          # hours before data is considered stale
 autonomous_enabled = true     # enable watchlist monitoring during market hours
 price_move_threshold_pct = 2.0   # % move to trigger an alert
 alert_cooldown_minutes = 30   # minutes before re-alerting the same ticker
+
+# AI-prioritized daily briefing pushed to Telegram by `qracer serve`.
+# Preview any time with `qracer brief`.
+[briefing]
+enabled = false               # push a daily briefing on the schedule below
+schedule = "0 8 * * 1-5"      # cron; weekday 08:00. Sent once per occurrence.
+# timezone = "America/New_York"  # IANA tz; omit for local time
+top_n = 5                     # number of prioritized items

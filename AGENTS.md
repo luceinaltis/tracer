@@ -2,9 +2,11 @@
 
 ## Project Overview
 
-Tracer — conversational investment agent for professional investors.
-Discovers alpha in global security markets via cross-market analysis and contrarian signal detection.
-Users query in natural language; the agent fetches real data, builds causal reasoning chains, and responds with calibrated conviction.
+qracer — conversational, CLI-first investment-research tool.
+Users query in natural language; the engine parses intent, fetches data through a
+capability registry, and synthesizes a response with an LLM. It also runs a
+background daemon (`qracer serve`) for scheduled tasks, price alerts, and custom
+autonomous agents.
 
 ## Agent Guidelines
 
@@ -17,12 +19,13 @@ Before implementing any feature or making architectural changes, read the releva
 
 | Document | When to read |
 |----------|-------------|
-| `docs/architecture.md` | Any new feature or structural change |
-| `docs/pipeline.md` | Data flow or pipeline modifications |
-| `docs/conversational-layer.md` | Conversation handling changes |
+| `docs/architecture.md` | Any new feature or structural change (layer map + roadmap) |
+| `docs/pipeline.md` | Query flow, handlers, analysis loop, tools |
+| `docs/conversational-layer.md` | Intent, context, roles, response formats |
 | `docs/risk-system.md` | Risk management, position sizing, portfolio limits |
 | `docs/memory-system.md` | Memory or state management changes |
-| `docs/workspace.md` | Workspace configuration changes |
+| `docs/serve.md` / `docs/schedule.md` | Background daemon, scheduled tasks, alerts |
+| `docs/custom-agents.md` | Prompt-defined autonomous agents |
 
 ## Tech Stack
 
@@ -31,6 +34,6 @@ Before implementing any feature or making architectural changes, read the releva
 - **Linter/Formatter**: ruff
 - **Type checker**: pyright
 - **Test**: pytest
-- **LLM**: multi-provider (Claude, OpenAI, Gemini)
-- **Data**: multi-source (Finnhub, yfinance, FRED, FMP)
-- **Storage**: DuckDB (single-file, append-only)
+- **LLM**: multi-provider (Claude, OpenAI, Gemini, OpenRouter)
+- **Data**: multi-source (yfinance, Finnhub, FRED)
+- **Storage**: DuckDB + file-backed JSON stores

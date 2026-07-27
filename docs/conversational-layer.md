@@ -1,168 +1,66 @@
 # Conversational Layer
 
-## Overview
+Intent parsing, context tracking, roles, and response formats. For the end-to-end
+flow see [pipeline.md](pipeline.md).
 
 ```text
-CLI (REPL)
-    ↓
-ConversationEngine          — context window, mode selection
-    ↓
-IntentRouter                — classify → LivePipeline or ResearchPipeline
-    ├── LivePipeline        — 1-2 tools → immediate response (< 5s)
-    └── ResearchPipeline    — 7-step async → notify on completion
-    ↓
-ResponseFormatter           — format based on pipeline and intent
-    ↓
-SessionManager              — persist turn, trigger compaction
+CLI REPL
+  → ConversationEngine   — context extraction, routing, fact persistence, compaction
+  → IntentParser         — classify into an Intent
+  → handler              — Portfolio / QuickPath / Comparison / Standard
+  → synthesizer          — format the response
+  → SessionLogger        — persist the turn (JSONL)
 ```
 
-## Conversation Context Window
+## Intent parsing
 
-The ConversationEngine maintains a rolling context window that tracks:
-
-| Context | TTL | Example |
-|---|---|---|
-| **Active tickers** | Session lifetime | User mentioned AAPL, TSMC, NVDA |
-| **Portfolio** | Persistent | User holds AAPL, short TSLA |
-| **Discussion topic** | 10 turns | Comparing semiconductor stocks |
-| **Macro backdrop** | Session lifetime | Last macro regime result |
-| **Recent data** | 5 minutes | Cached prices, news already fetched |
-
-Context is stored in-memory as a structured object, not as raw conversation history. This keeps token usage low while preserving relevant state.
+`conversation/intent.py`. `IntentParser.parse()` classifies a query (LLM classify
+with a keyword fallback) into an `Intent`:
 
 ```python
 @dataclass
-class ConversationContext:
-    active_tickers: list[str]        # mentioned in last N turns
-    portfolio: dict[str, Position]   # persisted across sessions
-    topic: str | None                # current discussion theme
-    macro_regime: str | None         # last detected regime
-    recent_data: dict[str, ToolResult]  # cached tool results
-    turn_history: list[Turn]         # last 20 turns (summarized beyond that)
+class Intent:
+    intent_type: IntentType
+    tickers: list[str]
+    tools: list[str]        # default tools from INTENT_TOOL_MAP
+    raw_query: str
 ```
 
-## Follow-Up Resolution
+`INTENT_TOOL_MAP` maps each `IntentType` to its default tool list; the
+`AnalysisLoop` may request more tools during the deep path. An import-time check
+keeps `INTENT_TOOL_MAP` and the dispatcher's `TOOL_DISPATCH` in sync.
 
-When a query lacks explicit context, the engine resolves it from the context window:
+## Context & follow-up resolution
 
-| Query | Context | Resolution |
-|---|---|---|
-| "What about Samsung?" | Was discussing AAPL semi supply chain | Samsung as AAPL supplier — fetch Samsung data, frame in supply chain context |
-| "And the insider trades?" | Last query was about TSMC | Fetch insider trades for TSMC |
-| "Compare it to the competitor" | Active ticker is NVDA | Identify top competitor (AMD), run comparison |
-| "How's my portfolio doing?" | Portfolio context loaded | Fetch prices for all portfolio tickers |
+The engine extracts a `ConversationContext` from recent turns (active tickers,
+topic, recent tool results). When a query has no explicit ticker, the engine tries
+to resolve it from context (pronouns, last topic); if still ambiguous it **asks**
+rather than guesses.
 
-Resolution rules:
-1. Check if query references an active ticker by name or alias
-2. Check if query references a tool/data type from a previous turn
-3. Check if query is a continuation of the current topic
-4. If ambiguous, ask the user — don't guess
+## Roles
 
-## Proactive Alerts
+`llm/providers.py` defines four roles. In the live pipeline they are used as:
 
-> **구현 예정** — 현재는 사용자 쿼리에 대한 응답만 지원합니다. 실시간 모니터링 및 자동 알림은 아직 구현되지 않았습니다.
+| Role | Used by |
+|---|---|
+| `RESEARCHER` | intent parsing |
+| `ANALYST` | analysis-loop evaluation |
+| `STRATEGIST` | trade thesis + response synthesis |
+| `REPORTER` | session compaction |
 
-During market hours, qracer monitors for events relevant to the conversation context and pushes alerts:
+`LLMRegistry` (`llm/registry.py`) routes a role to a registered provider. Adapters
+carry a `DEFAULT_MODEL_MAP` for per-role model tiering, **but** the role is not
+passed into `provider.complete()` today, so every call falls back to the provider's
+default model — the tiering does not currently take effect. Fixing this is on the
+roadmap ([architecture.md](architecture.md)).
 
-### Alert Types
+> The four classes under `qracer/agents/` (Researcher/Analyst/Strategist/Reporter)
+> are legacy scaffolding — they are **not** wired into the live pipeline, which calls
+> roles directly via the registry.
 
-| Type | Trigger | Example |
-|---|---|---|
-| **Price move** | Active ticker moves > 2% in session | "AAPL just dropped 3.2% — news: iPhone tariff concerns" |
-| **News event** | Breaking news on active ticker | "Reuters: TSMC Q1 revenue beats estimates by 8%" |
-| **Threshold** | User-set price alert triggered | "NVDA crossed below $800 (your alert)" |
-| **Portfolio** | Portfolio position moves significantly | "Your TSLA short is up 5% today" |
+## Tool result contract
 
-### Implementation
-
-- WebSocket feed filtered to active tickers + portfolio tickers
-- Alerts are non-blocking — displayed between user turns, not interrupting input
-- Alert history kept in session for follow-up ("tell me more about that AAPL drop")
-- Rate-limited: max 1 alert per ticker per 5 minutes to avoid noise
-
-## Response Formats
-
-### Quick Answer (LivePipeline)
-
-For price checks, simple lookups, and factual queries:
-
-```text
-AAPL: $178.52 (+1.3%) | Vol: 52M | Day range: 176.20–179.10
-```
-
-```text
-AAPL vs MSFT:
-  P/E:  28.5 vs 35.2
-  Div:  0.52% vs 0.74%
-  YTD:  +12.3% vs +8.7%
-```
-
-### Summary (LivePipeline with LLM)
-
-For opinion queries and news summaries:
-
-```text
-[AAPL — Quick Take]
-Trading at $178.52 (+1.3%). Three news items today: tariff concerns
-(negative), services revenue beat (positive), Buffett trimmed position
-(neutral). Net sentiment: slightly negative despite price action.
-Insider buying picked up last week — worth watching.
-```
-
-### Full Analysis (ResearchPipeline)
-
-```text
-[ANALYSIS: {ticker/theme} — {date}]
-Conviction: {score}/10
-
-WHAT'S HAPPENING
-{1-2 sentence direct answer}
-
-EVIDENCE CHAIN
-1. {evidence} — Source: {source}, {date}
-   → leads to: {conclusion}
-
-ADVERSARIAL CHECK
-- {reason this could be wrong}
-- {data staleness or reliability caveat}
-
-VERDICT
-{Final judgment with conviction score and key qualifier}
-```
-
-## Intent Types
-
-| Intent | Pipeline | Example Query |
-|---|---|---|
-| `price_check` | Live | "What's AAPL at?" |
-| `quick_news` | Live | "Any news on TSLA?" |
-| `comparison` | Live | "AAPL vs MSFT P/E" |
-| `follow_up` | Live | "What about Samsung?" |
-| `opinion` | Live | "Is NVDA overvalued?" |
-| `macro_check` | Live | "Where's the 10Y?" |
-| `alert_set` | Live | "Alert me if AAPL drops below 170" |
-| `event_analysis` | Research | "Why did AAPL spike 5% today?" |
-| `deep_dive` | Research | "Full analysis on TSMC" |
-| `alpha_hunt` | Research | "Where's the hidden alpha?" |
-| `cross_market` | Research | "Korea semi data → US AI stocks?" |
-
-## LLM Role Mapping
-
-All role-to-model assignments overridable via config.
-
-| Role | Default Model | Used By |
-|---|---|---|
-| router | Rule-based (no LLM) | IntentRouter for common patterns |
-| researcher | Claude Haiku | IntentRouter (ambiguous), data summarization |
-| analyst | Claude Sonnet | ResearchPipeline analysis steps |
-| strategist | Claude Opus | Contrarian detection, conviction scoring |
-| reporter | Claude Haiku | Session compaction, report formatting |
-
-Live mode avoids Opus entirely to stay within latency budget.
-
-## Tool Result Contract
-
-All pipeline tools return a `ToolResult` subtype:
+Every tool returns a uniform `ToolResult` (`models/base.py`):
 
 ```python
 @dataclass
@@ -173,18 +71,40 @@ class ToolResult:
     source: str
     fetched_at: datetime
     is_stale: bool
-    latency_ms: int          # tracked for budget enforcement
     error: str | None
 ```
 
-## Error Handling
+`source`/`fetched_at` reach the LLM prompt as evidence labels. Note `is_stale` is
+currently computed at fetch time and results are not cached between turns, so it is
+effectively always `False` — data-age grounding is a roadmap item.
 
-| Failure | Behavior |
-|---|---|
-| Tool timeout in Live mode | Return partial data with staleness caveat |
-| Single tool fails | Exclude from evidence; note as "data unavailable" |
-| ≥2 tools fail in Research mode | Exit early; list missing data |
-| LLM call fails | Retry once; partial result if still failing |
-| Rate limit mid-query | Serve from cache if available |
-| WebSocket disconnect (구현 예정) | Fall back to REST polling; note in session |
-| Alert flood | Rate-limit to 1 per ticker per 5 min |
+## Response formats
+
+### Quick answer (QuickPath)
+Template line(s) for price checks and simple lookups — no LLM.
+
+### Comparison (ComparisonHandler)
+Side-by-side markdown table across tickers plus a comparative verdict.
+
+### Full analysis (StandardHandler)
+`ResponseSynthesizer` renders a fixed template:
+
+```text
+Conviction: {score}/10
+
+WHAT HAPPENED
+{direct answer}
+
+EVIDENCE CHAIN
+{claim} — source: {source}
+
+ADVERSARIAL CHECK
+{why this could be wrong; data caveats}
+
+VERDICT
+{judgment + qualifier}
+```
+
+The template asks for an evidence chain and adversarial check, but does not yet
+enforce that numbers cite a specific `ToolResult` — the grounded, source-cited
+contract is the core of the harness roadmap.
