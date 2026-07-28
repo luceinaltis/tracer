@@ -46,3 +46,12 @@ priority = 50
 tier = "warm"
 kind = "data"
 api_key_env = "FRED_API_KEY"
+
+[providers.dart]
+# OpenDART (금융감독원 전자공시) — Korean listed-company financials & disclosures.
+# Ticker = 6-digit KRX stock code (e.g. 005930). Free key: https://opendart.fss.or.kr
+enabled = false
+priority = 40
+tier = "warm"
+kind = "data"
+api_key_env = "DART_API_KEY"
