@@ -2249,6 +2249,9 @@ all-llm = [
     { name = "google-generativeai" },
     { name = "openai" },
 ]
+dart = [
+    { name = "httpx" },
+]
 finnhub = [
     { name = "finnhub-python" },
 ]
@@ -2295,6 +2298,7 @@ requires-dist = [
     { name = "fredapi", marker = "extra == 'fred'", specifier = ">=0.5.0" },
     { name = "google-generativeai", marker = "extra == 'all-llm'", specifier = ">=0.8.0" },
     { name = "google-generativeai", marker = "extra == 'gemini'", specifier = ">=0.8.0" },
+    { name = "httpx", marker = "extra == 'dart'", specifier = ">=0.27.0" },
     { name = "nicegui", marker = "extra == 'web'", specifier = ">=1.4.0" },
     { name = "openai", marker = "extra == 'all-llm'", specifier = ">=1.0.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0.0" },
@@ -2306,7 +2310,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.24.0" },
     { name = "yfinance", specifier = ">=0.2.0" },
 ]
-provides-extras = ["openai", "gemini", "openrouter", "finnhub", "fred", "all-llm", "web", "pdf"]
+provides-extras = ["openai", "gemini", "openrouter", "finnhub", "fred", "dart", "all-llm", "web", "pdf"]
 
 [package.metadata.requires-dev]
 dev = [

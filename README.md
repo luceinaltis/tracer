@@ -9,7 +9,8 @@ Natural language queries → cross-market analysis → actionable alpha reports 
 - **Conversational pipeline** — intent → handler → tools → LLM synthesis, with
   quick lookups, deep analysis, multi-ticker comparison, and portfolio checks
 - **Capability-routed data** — yfinance (price), Finnhub (fundamentals/news/insider),
-  FRED (macro); pluggable via a capability registry + entry points
+  FRED (macro), DART (Korean company financials/disclosures, by 6-digit KRX code);
+  pluggable via a capability registry + entry points
 - **Role-based LLM routing** — Researcher / Analyst / Strategist / Reporter roles
 - **Portfolio-aware risk** — position sizing by conviction, sector/correlation limits, rebalance
 - **Session memory** — 3-tier (JSONL audit → compressed summaries → DuckDB search index)
@@ -52,7 +53,7 @@ request by capability, not by source. See [docs/architecture.md](docs/architectu
 ```text
 qracer/
 ├── conversation/   # Intent parsing, context, engine, handlers, analysis loop, synthesizer
-├── data/           # Capability protocols + adapters (yfinance, Finnhub, FRED) + registry
+├── data/           # Capability protocols + adapters (yfinance, Finnhub, FRED, DART) + registry
 ├── llm/            # LLM role routing + adapters (Claude, OpenAI, Gemini, OpenRouter)
 ├── risk/           # Portfolio risk calculator, position sizing, correlation
 ├── memory/         # Session logging, compaction, search, fact store
@@ -105,7 +106,7 @@ uv run pytest --cov=qracer --cov-report=term-missing --cov-fail-under=80
 | Type checker | pyright |
 | Test | pytest + pytest-asyncio |
 | LLM | Multi-provider (Claude, OpenAI, Gemini, OpenRouter) |
-| Data | Multi-source (yfinance, Finnhub, FRED) |
+| Data | Multi-source (yfinance, Finnhub, FRED, DART) |
 | Storage | DuckDB + file-backed JSON stores |
 
 ## Documentation

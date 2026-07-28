@@ -57,11 +57,14 @@ Current capabilities: `PriceProvider`, `FundamentalProvider`, `MacroProvider`,
 | Capability | Adapter | Notes |
 |---|---|---|
 | Price / OHLCV | yfinance (`data/yfinance_adapter.py`) | unofficial; IP-block prone |
-| Fundamentals / News / Insider | Finnhub (`data/finnhub_adapter.py`) | news sentiment not populated |
+| Fundamentals / News / Insider | Finnhub (`data/finnhub_adapter.py`) | US market; news sentiment not populated |
 | Macro | FRED (`data/fred_adapter.py`) | 6 named series + raw series id |
+| Fundamentals / Disclosures / Insider | DART (`data/dart_adapter.py`) | Korea (OpenDART); ticker = 6-digit KRX code (e.g. `005930`) |
 
-Only one adapter per capability is registered by default, so the fallback machinery
-is present but idle. Adding a source = a capability adapter + one entry in
+DART and Finnhub both serve the fundamentals/news/insider capabilities: DART is
+higher priority but fails fast on non-6-digit tickers, so Korean codes route to DART
+and everything else falls through to Finnhub. This is the fallback machinery in
+actual use. Adding a source = a capability adapter + one entry in
 `provider_catalog.py` **or** an external package on the `qracer.data_providers`
 entry-point group.
 
