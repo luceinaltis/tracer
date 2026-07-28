@@ -14,18 +14,18 @@ UI to display.
 from __future__ import annotations
 
 import logging
-import time
 
 from qracer.agent_runner import AgentResult, run_agents
 from qracer.agents_store import CONTINUOUS_COOLDOWN_SECONDS, AgentStore
 from qracer.llm.providers import LLMProvider
+from qracer.monitors.base import PollingMonitor
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_INTERVAL = 5.0  # seconds between agent-due checks
 
 
-class AgentMonitor:
+class AgentMonitor(PollingMonitor):
     """Runs due custom agents concurrently and stores their results.
 
     Usage::
@@ -43,25 +43,18 @@ class AgentMonitor:
         check_interval: float = DEFAULT_CHECK_INTERVAL,
         continuous_cooldown: int = CONTINUOUS_COOLDOWN_SECONDS,
     ) -> None:
+        super().__init__(check_interval)
         self._store = store
         self._provider = provider
-        self._check_interval = check_interval
         self._continuous_cooldown = continuous_cooldown
-        self._last_check: float | None = None
 
     @property
     def store(self) -> AgentStore:
         return self._store
 
-    def should_check(self) -> bool:
-        """Return True when a due-check is warranted (monotonic throttle)."""
-        if self._last_check is None:
-            return True
-        return (time.monotonic() - self._last_check) >= self._check_interval
-
     async def check(self) -> list[AgentResult]:
         """Run all due agents concurrently and persist their results."""
-        self._last_check = time.monotonic()
+        self._mark_checked()
         due = self._store.due(continuous_cooldown=self._continuous_cooldown)
         if not due:
             return []

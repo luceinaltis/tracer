@@ -192,7 +192,7 @@ class TestTaskStore:
         assert len(store.get_due()) == 0
 
         # Manually set next_run to past
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
         assert len(store.get_due()) == 1
 
     def test_get_active(self, store: TaskStore) -> None:
@@ -200,34 +200,34 @@ class TestTaskStore:
         store.create(TaskActionType.NEWS_SCAN, {"ticker": "TSLA"}, "every 30m")
         assert len(store.get_active()) == 2
 
-        store.mark_completed(store._tasks[0].id)
+        store.mark_completed(store._items[0].id)
         assert len(store.get_active()) == 1
 
     def test_mark_running(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
         assert store.mark_running(task.id)
-        assert store._tasks[0].status == TaskStatus.RUNNING
+        assert store._items[0].status == TaskStatus.RUNNING
 
     def test_mark_completed(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
         assert store.mark_completed(task.id)
-        assert store._tasks[0].status == TaskStatus.COMPLETED
-        assert store._tasks[0].run_count == 1
-        assert store._tasks[0].last_run_at is not None
+        assert store._items[0].status == TaskStatus.COMPLETED
+        assert store._items[0].run_count == 1
+        assert store._items[0].last_run_at is not None
 
     def test_mark_failed(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
         assert store.mark_failed(task.id, "connection error")
-        assert store._tasks[0].status == TaskStatus.FAILED
-        assert store._tasks[0].last_error == "connection error"
+        assert store._items[0].status == TaskStatus.FAILED
+        assert store._items[0].last_error == "connection error"
 
     def test_advance_recurring(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
         old_next = task.next_run_at
         store.mark_completed(task.id)
         assert store.advance_recurring(task.id)
-        assert store._tasks[0].status == TaskStatus.PENDING
-        assert store._tasks[0].next_run_at != old_next
+        assert store._items[0].status == TaskStatus.PENDING
+        assert store._items[0].next_run_at != old_next
 
     def test_advance_recurring_fails_for_once(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "2030-01-01T09:00:00")
@@ -236,8 +236,8 @@ class TestTaskStore:
     def test_cancel(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
         assert store.cancel(task.id)
-        assert store._tasks[0].enabled is False
-        assert store._tasks[0].status == TaskStatus.COMPLETED
+        assert store._items[0].enabled is False
+        assert store._items[0].status == TaskStatus.COMPLETED
 
     def test_remove(self, store: TaskStore) -> None:
         task = store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
@@ -251,7 +251,7 @@ class TestTaskStore:
 
         store2 = TaskStore(path)
         assert len(store2) == 1
-        assert store2._tasks[0].action_type == TaskActionType.ANALYZE
+        assert store2._items[0].action_type == TaskActionType.ANALYZE
 
     def test_corrupt_file(self, tmp_path) -> None:
         path = tmp_path / "tasks.json"

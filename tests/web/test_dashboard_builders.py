@@ -2,8 +2,8 @@
 
 The NiceGUI page in ``qracer.web.dashboard`` delegates all data shaping to small
 pure functions (``_portfolio_rows``, ``_watchlist_rows``, ``_alert_rows``,
-``_task_rows``, ``_thesis_rows``) plus ``_fetch_prices``. Those are tested here
-directly, without rendering any NiceGUI widgets.
+``_task_rows``, ``_thesis_rows``). Those are tested here directly, without
+rendering any NiceGUI widgets. (Price fetching moved to ``tests/data/test_prices.py``.)
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from qracer.alerts import Alert, AlertCondition  # noqa: E402
 from qracer.config.models import Holding, PortfolioConfig  # noqa: E402
 from qracer.memory.fact_models import PersistedThesis, ThesisStatus  # noqa: E402
 from qracer.web import dashboard  # noqa: E402
-from tests.helpers import make_data_registry  # noqa: E402
 
 
 class TestCatalystLabel:
@@ -149,15 +148,3 @@ class TestThesisRows:
     def test_short_when_target_below_entry(self) -> None:
         rows = dashboard._thesis_rows([self._thesis(target=50.0, entry_high=100.0)])
         assert rows[0]["dir"] == "SHORT"
-
-
-class TestFetchPrices:
-    async def test_none_registry_returns_empty(self) -> None:
-        assert await dashboard._fetch_prices(None, ["AAPL"]) == {}
-
-    async def test_no_tickers_returns_empty(self) -> None:
-        assert await dashboard._fetch_prices(make_data_registry(), []) == {}
-
-    async def test_fetches_prices(self) -> None:
-        prices = await dashboard._fetch_prices(make_data_registry(), ["AAPL", "MSFT"])
-        assert prices == {"AAPL": 150.0, "MSFT": 150.0}

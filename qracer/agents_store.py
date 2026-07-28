@@ -12,16 +12,16 @@ UI can share the same file and see each other's writes.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
 from typing import Any, cast
 
 from croniter import croniter
+
+from qracer.storage.json_store import JsonListStore
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ class Agent:
         return f"{self.name} [{self.model}] ({trigger})"
 
 
-class AgentStore:
+class AgentStore(JsonListStore[Agent]):
     """File-backed storage for custom agents.
 
     Usage::
@@ -120,26 +120,23 @@ class AgentStore:
         store.record_run(agent.id, output="...")
     """
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._mtime: float = 0.0
-        self._agents: list[Agent] = self._load()
+    _label = "agents"
 
     @property
     def agents(self) -> list[Agent]:
         """All agents in stored order."""
         self._maybe_reload()
-        return list(self._agents)
+        return list(self._items)
 
     def get(self, agent_id: str) -> Agent | None:
         self._maybe_reload()
-        return next((a for a in self._agents if a.id == agent_id), None)
+        return next((a for a in self._items if a.id == agent_id), None)
 
     def find_by_name(self, name: str) -> Agent | None:
         """Case-insensitive lookup by name."""
         self._maybe_reload()
         lowered = name.strip().lower()
-        return next((a for a in self._agents if a.name.lower() == lowered), None)
+        return next((a for a in self._items if a.name.lower() == lowered), None)
 
     def create(
         self,
@@ -169,7 +166,7 @@ class AgentStore:
             created_at=now.isoformat(),
             next_run_at=next_run,
         )
-        self._agents.append(agent)
+        self._items.append(agent)
         self._save()
         return agent
 
@@ -178,7 +175,7 @@ class AgentStore:
 
         Recomputes ``next_run_at`` whenever the trigger/cron changes.
         """
-        agent = next((a for a in self._agents if a.id == agent_id), None)
+        agent = next((a for a in self._items if a.id == agent_id), None)
         if agent is None:
             return None
 
@@ -211,9 +208,9 @@ class AgentStore:
 
     def remove(self, agent_id: str) -> bool:
         """Remove an agent by id. Returns True if found and removed."""
-        for i, a in enumerate(self._agents):
+        for i, a in enumerate(self._items):
             if a.id == agent_id:
-                self._agents.pop(i)
+                self._items.pop(i)
                 self._save()
                 return True
         return False
@@ -221,8 +218,8 @@ class AgentStore:
     def reorder(self, ids: list[str]) -> None:
         """Reorder agents to match *ids*; any not listed keep their relative order at the end."""
         index = {aid: pos for pos, aid in enumerate(ids)}
-        original = {a.id: i for i, a in enumerate(self._agents)}
-        self._agents.sort(key=lambda a: index.get(a.id, len(index) + original[a.id]))
+        original = {a.id: i for i, a in enumerate(self._items)}
+        self._items.sort(key=lambda a: index.get(a.id, len(index) + original[a.id]))
         self._save()
 
     def due(
@@ -234,7 +231,7 @@ class AgentStore:
         """Return agents that should run now (cron due or continuous off cooldown)."""
         self._maybe_reload()
         ref = now or datetime.now(timezone.utc)
-        return [a for a in self._agents if a.is_due(ref, continuous_cooldown=continuous_cooldown)]
+        return [a for a in self._items if a.is_due(ref, continuous_cooldown=continuous_cooldown)]
 
     def record_run(
         self,
@@ -244,7 +241,7 @@ class AgentStore:
         error: str | None = None,
     ) -> bool:
         """Persist the result of a run and advance the schedule. Returns True if found."""
-        for a in self._agents:
+        for a in self._items:
             if a.id != agent_id:
                 continue
             now = datetime.now(timezone.utc)
@@ -259,51 +256,17 @@ class AgentStore:
         return False
 
     def clear(self) -> None:
-        self._agents.clear()
+        self._items.clear()
         self._save()
-
-    def __len__(self) -> int:
-        return len(self._agents)
 
     # -- persistence --------------------------------------------------------
 
-    def _maybe_reload(self) -> None:
-        """Re-read from disk if another process modified the file."""
-        if not self._path.exists():
-            return
-        try:
-            current_mtime = self._path.stat().st_mtime
-        except OSError:
-            return
-        if current_mtime != self._mtime:
-            self._agents = self._load()
-
-    def _load(self) -> list[Agent]:
-        if not self._path.exists():
-            return []
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            self._mtime = self._path.stat().st_mtime
-            if isinstance(data, list):
-                return [self._deserialize(item) for item in data if isinstance(item, dict)]
-        except (json.JSONDecodeError, OSError, KeyError, ValueError):
-            logger.warning("Failed to load agents from %s", self._path)
-        return []
-
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = [self._serialize(a) for a in self._agents]
-        self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        self._mtime = self._path.stat().st_mtime
-
-    @staticmethod
-    def _serialize(agent: Agent) -> dict[str, Any]:
+    def _serialize(self, agent: Agent) -> dict[str, Any]:
         d = asdict(agent)
         d["trigger_type"] = agent.trigger_type.value
         return d
 
-    @staticmethod
-    def _deserialize(data: dict[str, Any]) -> Agent:
+    def _deserialize(self, data: dict[str, Any]) -> Agent:
         return Agent(
             id=data["id"],
             name=data["name"],
