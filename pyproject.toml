@@ -60,3 +60,13 @@ reportMissingTypeStubs = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = [".", "tests"]
+
+# Coverage config lives here (not just in CI) so a local `pytest --cov=qracer`
+# enforces the same gate. `--cov` is intentionally NOT in addopts, so running a
+# subset of tests stays fast and doesn't trip fail_under.
+[tool.coverage.run]
+source = ["qracer"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

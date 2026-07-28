@@ -522,7 +522,7 @@ class HistoryPanel(VerticalScroll):
             sid = f.stem
             mtime = f.stat().st_mtime
             dt = datetime.datetime.fromtimestamp(mtime)
-            line_count = sum(1 for _ in f.open())
+            line_count = sum(1 for _ in f.open(encoding="utf-8"))
             table.add_row(sid, dt.strftime("%Y-%m-%d %H:%M"), str(line_count))
 
 

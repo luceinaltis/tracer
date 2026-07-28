@@ -71,7 +71,7 @@ class TestReportExporterMarkdown:
         path = exporter.save_markdown(_intent(), _analysis(), "Analysis text here.")
         assert path.exists()
         assert path.suffix == ".md"
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         assert "AAPL" in content
         assert "Analysis text here." in content
         assert "0.85" in content
@@ -79,7 +79,7 @@ class TestReportExporterMarkdown:
     def test_save_with_thesis(self, tmp_path) -> None:
         exporter = ReportExporter(tmp_path)
         path = exporter.save_markdown(_intent(), _analysis(with_thesis=True), "Response")
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         assert "Trade Thesis" in content
         assert "$175.00" in content
         assert "$200.00" in content
@@ -90,7 +90,7 @@ class TestReportExporterMarkdown:
     def test_save_with_data_sources(self, tmp_path) -> None:
         exporter = ReportExporter(tmp_path)
         path = exporter.save_markdown(_intent(), _analysis(), "Response")
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         assert "Data Sources" in content
         assert "price_event" in content
         assert "news" in content
@@ -110,7 +110,7 @@ class TestReportExporterJson:
         path = exporter.save_json(_intent(), _analysis(), "Analysis text.")
         assert path.exists()
         assert path.suffix == ".json"
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert data["ticker"] == "AAPL"
         assert data["confidence"] == 0.85
         assert data["response"] == "Analysis text."
@@ -119,7 +119,7 @@ class TestReportExporterJson:
     def test_save_with_thesis(self, tmp_path) -> None:
         exporter = ReportExporter(tmp_path)
         path = exporter.save_json(_intent(), _analysis(with_thesis=True), "Response")
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert "trade_thesis" in data
         assert data["trade_thesis"]["conviction"] == 8
         assert data["trade_thesis"]["target_price"] == 200.0
@@ -127,7 +127,7 @@ class TestReportExporterJson:
     def test_no_thesis_key_when_none(self, tmp_path) -> None:
         exporter = ReportExporter(tmp_path)
         path = exporter.save_json(_intent(), _analysis(with_thesis=False), "Response")
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert "trade_thesis" not in data
 
 

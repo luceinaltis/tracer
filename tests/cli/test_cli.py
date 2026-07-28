@@ -192,78 +192,61 @@ class TestStatus:
 
 
 class TestConfig:
-    """The `config` command is isolated via QRACER_CONFIG_DIR, which both the
-    loader (reads) and the writer (writes) honor."""
+    """The `config` command is isolated via the shared ``config_dir`` fixture, which
+    sets QRACER_CONFIG_DIR (honored by both the loader and the writer)."""
 
-    def _env(self, monkeypatch, tmp_path: Path) -> Path:
-        d = tmp_path / ".qracer"
-        d.mkdir()
-        monkeypatch.setenv("QRACER_CONFIG_DIR", str(d))
-        return d
-
-    def test_config_show_lists_groups_and_providers(self, monkeypatch, tmp_path: Path) -> None:
-        self._env(monkeypatch, tmp_path)
+    def test_config_show_lists_groups_and_providers(self, config_dir: Path) -> None:
         result = CliRunner().invoke(main, ["config"])
         assert result.exit_code == 0
         assert "General:" in result.output
         assert "default_mode" in result.output
         assert "Providers:" in result.output
 
-    def test_config_set_nested_and_seeds_file(self, monkeypatch, tmp_path: Path) -> None:
-        d = self._env(monkeypatch, tmp_path)  # no config.toml yet
+    def test_config_set_nested_and_seeds_file(self, config_dir: Path) -> None:
         result = CliRunner().invoke(main, ["config", "set", "briefing.schedule", "0 9 * * *"])
         assert result.exit_code == 0, result.output
         assert "Set briefing.schedule = 0 9 * * *" in result.output
-        text = (d / "config.toml").read_text(encoding="utf-8")
+        text = (config_dir / "config.toml").read_text(encoding="utf-8")
         assert "[briefing]" in text and 'schedule = "0 9 * * *"' in text
 
-    def test_config_set_compat_flag(self, monkeypatch, tmp_path: Path) -> None:
-        d = self._env(monkeypatch, tmp_path)
+    def test_config_set_compat_flag(self, config_dir: Path) -> None:
         result = CliRunner().invoke(main, ["config", "--set", "default_mode=deep"])
         assert result.exit_code == 0
-        assert 'default_mode = "deep"' in (d / "config.toml").read_text(encoding="utf-8")
+        assert 'default_mode = "deep"' in (config_dir / "config.toml").read_text(encoding="utf-8")
 
-    def test_config_get(self, monkeypatch, tmp_path: Path) -> None:
-        self._env(monkeypatch, tmp_path)
+    def test_config_get(self, config_dir: Path) -> None:
         CliRunner().invoke(main, ["config", "set", "max_iterations", "9"])
         result = CliRunner().invoke(main, ["config", "get", "max_iterations"])
         assert result.exit_code == 0
         assert result.output.strip() == "9"
 
-    def test_config_set_invalid_choice(self, monkeypatch, tmp_path: Path) -> None:
-        self._env(monkeypatch, tmp_path)
+    def test_config_set_invalid_choice(self, config_dir: Path) -> None:
         result = CliRunner().invoke(main, ["config", "set", "default_mode", "sideways"])
         assert result.exit_code != 0
         assert "must be one of" in result.output
 
-    def test_config_set_unknown_key(self, monkeypatch, tmp_path: Path) -> None:
-        self._env(monkeypatch, tmp_path)
+    def test_config_set_unknown_key(self, config_dir: Path) -> None:
         result = CliRunner().invoke(main, ["config", "set", "bogus", "1"])
         assert result.exit_code != 0
         assert "Unknown setting" in result.output
 
-    def test_config_set_bad_compat_format(self, monkeypatch, tmp_path: Path) -> None:
-        self._env(monkeypatch, tmp_path)
+    def test_config_set_bad_compat_format(self, config_dir: Path) -> None:
         result = CliRunner().invoke(main, ["config", "--set", "noequals"])
         assert result.exit_code != 0
 
-    def test_config_providers_enables_and_sets_key(self, monkeypatch, tmp_path: Path) -> None:
-        d = self._env(monkeypatch, tmp_path)
+    def test_config_providers_enables_and_sets_key(self, config_dir: Path) -> None:
         # Configure 'dart': enable = yes, enter a key, then blank to finish.
         result = CliRunner().invoke(main, ["config", "providers"], input="dart\ny\nMY_DART_KEY\n\n")
         assert result.exit_code == 0, result.output
-        providers = (d / "providers.toml").read_text(encoding="utf-8")
+        providers = (config_dir / "providers.toml").read_text(encoding="utf-8")
         assert "[providers.dart]" in providers
         assert "enabled = true" in providers.split("[providers.dart]", 1)[1]
-        creds = (d / "credentials.env").read_text(encoding="utf-8")
+        creds = (config_dir / "credentials.env").read_text(encoding="utf-8")
         assert "DART_API_KEY=MY_DART_KEY" in creds
 
-    def test_provider_key_round_trips_through_load_config(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
+    def test_provider_key_round_trips_through_load_config(self, config_dir: Path) -> None:
         # Regression: a key set via the CLI under QRACER_CONFIG_DIR must actually be
         # read back by load_config() (writer and loader must resolve the same dir).
-        self._env(monkeypatch, tmp_path)
         CliRunner().invoke(main, ["config", "providers"], input="dart\ny\nROUNDTRIP\n\n")
         from qracer.config.loader import load_config
 
