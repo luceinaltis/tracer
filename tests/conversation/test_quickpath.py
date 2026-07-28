@@ -184,7 +184,7 @@ class TestKeywordDetection:
 
         import asyncio
 
-        intent = asyncio.get_event_loop().run_until_complete(parser.parse("What's AAPL at?"))
+        intent = asyncio.run(parser.parse("What's AAPL at?"))
         assert intent.intent_type == IntentType.PRICE_CHECK
 
     def test_quick_news_keywords(self) -> None:
@@ -202,7 +202,7 @@ class TestKeywordDetection:
 
         import asyncio
 
-        intent = asyncio.get_event_loop().run_until_complete(parser.parse("Any news on TSLA?"))
+        intent = asyncio.run(parser.parse("Any news on TSLA?"))
         assert intent.intent_type == IntentType.QUICK_NEWS
 
 

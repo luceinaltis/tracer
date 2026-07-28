@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -122,7 +123,8 @@ class TestTomlParseErrors:
     def test_error_message_includes_path(self, tmp_path: Path) -> None:
         toml_file = tmp_path / "bad.toml"
         toml_file.write_text("= no key\n")
-        with pytest.raises(ConfigParseError, match=str(toml_file)):
+        # re.escape: a Windows path (e.g. C:\Users\...) is not a valid regex on its own.
+        with pytest.raises(ConfigParseError, match=re.escape(str(toml_file))):
             _load_toml(toml_file)
 
     def test_error_chains_original_exception(self, tmp_path: Path) -> None:
