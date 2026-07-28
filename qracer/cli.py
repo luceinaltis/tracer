@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -13,6 +12,7 @@ from pathlib import Path
 import click
 
 from qracer.bootstrap import build_registries
+from qracer.config import writer
 from qracer.config.loader import (
     _load_toml,
     _user_dir,
@@ -73,34 +73,6 @@ def _collect_llm_choices() -> list[tuple[str, str, str | None]]:
             env: str | None = cfg.get("api_key_env")
             result.append((name, label, env))
     return result
-
-
-def _update_provider_selection(
-    providers_path: Path,
-    chosen: str,
-    all_llm: list[tuple[str, str, str | None]],
-) -> None:
-    """Enable the chosen LLM provider and disable others in providers.toml."""
-    if not providers_path.exists():
-        return
-    text = providers_path.read_text(encoding="utf-8")
-    for name, _, _ in all_llm:
-        enable = "true" if name == chosen else "false"
-        pattern = rf"(\[providers\.{re.escape(name)}\][^\[]*?)enabled\s*=\s*(true|false)"
-        text = re.sub(pattern, rf"\1enabled = {enable}", text)
-    providers_path.write_text(text, encoding="utf-8")
-
-
-def _update_config_llm(config_path: Path, provider: str, model: str | None = None) -> None:
-    """Persist the active LLM provider (and model, if given) into config.toml."""
-    if not config_path.exists():
-        return
-    original = config_path.read_text(encoding="utf-8")
-    text = re.sub(r"(?m)^\s*llm_provider\s*=.*$", f'llm_provider = "{provider}"', original, count=1)
-    if model:
-        text = re.sub(r"(?m)^\s*llm_model\s*=.*$", f'llm_model = "{model}"', text, count=1)
-    if text != original:
-        config_path.write_text(text, encoding="utf-8")
 
 
 def _select_openrouter_model() -> str:
@@ -166,14 +138,15 @@ def install() -> None:
     # 1. Create directory
     home_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Copy default config files
+    # 2. Copy default config files for any that don't exist yet (existing files are
+    #    left in place; the wizard's choices below are applied as surgical, comment-
+    #    preserving upserts via the writer, so re-running install is safe).
     for name in ("config.toml", "providers.toml", "portfolio.toml"):
-        src = SCHEMA_DIR / name
         dest = home_dir / name
         if dest.exists():
-            click.echo(f"  {name} already exists, skipping.")
+            click.echo(f"  {name} already exists, keeping it.")
         else:
-            shutil.copy2(src, dest)
+            shutil.copy2(SCHEMA_DIR / name, dest)
             click.echo(f"  Created {name}")
 
     # 3. LLM provider selection
@@ -200,26 +173,24 @@ def install() -> None:
     # 5. Prompt for portfolio currency
     currency = click.prompt("\n  Portfolio currency", default="USD").strip()
 
-    # 6. Write credentials.env
-    creds_path = home_dir / "credentials.env"
-    lines = [f"{k}={v}" for k, v in creds.items()]
-    creds_path.write_text("\n".join(lines) + "\n" if lines else "")
+    # 6. Write credentials.env (structured upsert, preserves any existing keys).
+    if chosen_env and creds.get(chosen_env):
+        writer.set_credential(chosen_env, creds[chosen_env], config_dir=home_dir)
+    (home_dir / "credentials.env").touch(exist_ok=True)  # always present, even if empty
 
-    # 7. Enable chosen LLM provider in providers.toml
-    _update_provider_selection(home_dir / "providers.toml", chosen_name, llm_choices)
+    # 7. Enable the chosen LLM provider, disable the others (surgical upsert).
+    for name, _, _ in llm_choices:
+        writer.set_provider_field(name, "enabled", name == chosen_name, config_dir=home_dir)
 
-    # 7b. Persist provider (+ OpenRouter model) choice to config.toml
-    _update_config_llm(home_dir / "config.toml", chosen_name, openrouter_model)
+    # 7b. Persist provider (+ OpenRouter model) choice to config.toml.
+    writer.set_config_value("llm_provider", chosen_name, config_dir=home_dir)
     if openrouter_model:
+        writer.set_config_value("llm_model", openrouter_model, config_dir=home_dir)
         click.echo(f"  Model set to {openrouter_model}")
 
-    # 8. Update portfolio currency if non-default
-    if currency != "USD":
-        portfolio_path = home_dir / "portfolio.toml"
-        if portfolio_path.exists():
-            text = portfolio_path.read_text(encoding="utf-8")
-            text = text.replace('currency = "USD"', f'currency = "{currency}"')
-            portfolio_path.write_text(text, encoding="utf-8")
+    # 8. Update portfolio currency if non-default.
+    if currency and currency != "USD":
+        writer.set_portfolio_value("currency", currency, config_dir=home_dir)
 
     click.echo(f"\n✓ Setup complete! {chosen_label} enabled as LLM provider.")
 
@@ -331,52 +302,118 @@ def status() -> None:
 # ---------------------------------------------------------------------------
 
 
-@main.command("config")
-@click.option("--set", "set_value", default=None, help="Set a value: key=value")
-def config_cmd(set_value: str | None) -> None:
-    """Show or update current merged config."""
-    if set_value is not None:
-        _config_set(set_value)
+@main.group("config", invoke_without_command=True)
+@click.option("--set", "set_pair", default=None, help="(compat) Set a value: key=value")
+@click.pass_context
+def config_cmd(ctx: click.Context, set_pair: str | None) -> None:
+    """Show or update configuration.
+
+    Bare `qracer config` lists all settings. Use `config set <key> <value>` to
+    change one, `config get <key>` to read one, and `config providers` to
+    enable/disable providers and set their API keys interactively.
+    """
+    if set_pair is not None:  # backward-compatible `config --set key=value`
+        if ctx.invoked_subcommand is not None:
+            raise click.UsageError("--set cannot be combined with a subcommand.")
+        if "=" not in set_pair:
+            raise click.BadParameter("Expected key=value format", param_hint="--set")
+        key, _, value = set_pair.partition("=")
+        _apply_setting(key.strip(), value.strip())
         return
+    if ctx.invoked_subcommand is None:
+        _show_settings()
+
+
+def _apply_setting(key: str, raw_value: str) -> None:
+    """Validate *raw_value* against the schema and persist it via the config writer."""
+    from qracer.config import settings_schema as ss
+
+    setting = ss.find(key)
+    if setting is None:
+        raise click.ClickException(
+            f"Unknown setting {key!r}. Run 'qracer config' to see available keys."
+        )
+    try:
+        value = ss.coerce(setting, raw_value)
+        ss.validate(setting, value)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if setting.target == "config":
+        writer.set_config_value(setting.key, value)
+    else:
+        writer.set_portfolio_value(setting.key, value)
+    click.echo(f"Set {setting.key} = {value}")
+
+
+@config_cmd.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str) -> None:
+    """Set a setting: qracer config set <key> <value>."""
+    _apply_setting(key, value)
+
+
+@config_cmd.command("get")
+@click.argument("key")
+def config_get(key: str) -> None:
+    """Print the current value of a setting."""
+    from qracer.config import settings_schema as ss
+
+    setting = ss.find(key)
+    if setting is None:
+        raise click.ClickException(f"Unknown setting {key!r}.")
+    click.echo(ss.get_current(load_config(force_reload=True), setting))
+
+
+@config_cmd.command("providers")
+def config_providers() -> None:
+    """Interactively enable/disable providers and set their API keys."""
+    from qracer.config import settings_schema as ss
+
+    while True:
+        rows = ss.provider_settings(load_config(force_reload=True))
+        click.echo("\nProviders:")
+        for r in rows:
+            state = "on " if r.enabled else "off"
+            key = "" if not r.api_key_env else (" key:set" if r.has_key else " key:missing")
+            click.echo(f"  [{state}] {r.name} ({r.kind}, prio {r.priority}){key}")
+        name = click.prompt(
+            "\nProvider to configure (blank to finish)", default="", show_default=False
+        ).strip()
+        if not name:
+            break
+        row = next((r for r in rows if r.name == name), None)
+        if row is None:
+            click.echo(f"  Unknown provider {name!r}.")
+            continue
+        enable = click.confirm(f"  Enable {name}?", default=row.enabled)
+        writer.set_provider_field(name, "enabled", enable)
+        if row.api_key_env:
+            entered = click.prompt(
+                f"  {row.api_key_env} (blank keeps current)", default="", show_default=False
+            ).strip()
+            if entered:
+                writer.set_credential(row.api_key_env, entered)
+        click.echo(f"  Saved {name}.")
+    click.echo("Done.")
+
+
+def _show_settings() -> None:
+    """Print all settings grouped by section, with current values (keys masked)."""
+    from qracer.config import settings_schema as ss
 
     cfg = load_config(force_reload=True)
-    click.echo(cfg.model_dump_json(indent=2))
-
-
-def _config_set(pair: str) -> None:
-    """Write key=value into ~/.qracer/config.toml."""
-    if "=" not in pair:
-        raise click.BadParameter("Expected key=value format", param_hint="--set")
-
-    key, _, value = pair.partition("=")
-    key = key.strip()
-    value = value.strip()
-
-    home_dir = _user_dir()
-    config_path = home_dir / "config.toml"
-
-    if not config_path.exists():
-        click.echo("No config.toml found. Run 'qracer install' first.")
-        raise SystemExit(1)
-
-    # Load existing, update, and write back
-    data = _load_toml(config_path)
-    data[key] = value
-    _write_toml(config_path, data)
-    click.echo(f"Set {key}={value} in {config_path}")
-
-
-def _write_toml(path: Path, data: dict[str, object]) -> None:
-    """Write a flat dict back to TOML."""
-    lines: list[str] = []
-    for k, v in data.items():
-        if isinstance(v, bool):
-            lines.append(f"{k} = {'true' if v else 'false'}")
-        elif isinstance(v, (int, float)):
-            lines.append(f"{k} = {v}")
-        else:
-            lines.append(f'{k} = "{v}"')
-    path.write_text("\n".join(lines) + "\n")
+    for group in ss.groups():
+        click.echo(f"\n{group}:")
+        for s in ss.APP_SETTINGS:
+            if s.group == group:
+                click.echo(f"  {s.key} = {ss.get_current(cfg, s)}")
+    click.echo("\nProviders:")
+    for r in ss.provider_settings(cfg):
+        state = "on " if r.enabled else "off"
+        key = "" if not r.api_key_env else (" key:set" if r.has_key else " key:missing")
+        click.echo(f"  [{state}] {r.name} ({r.kind}, prio {r.priority}){key}")
+    click.echo("\nEdit with:  qracer config set <key> <value>  |  qracer config providers")
 
 
 # ---------------------------------------------------------------------------

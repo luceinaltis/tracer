@@ -12,6 +12,7 @@ dependencies = [
   "tomli>=2.0.0; python_version < '3.11'",
   "textual>=0.70.0",
   "croniter>=2.0.0",
+  "tomlkit>=0.13.0",
 ]
 
 [project.optional-dependencies]

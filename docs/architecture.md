@@ -84,6 +84,18 @@ Config resolves in order (first found wins): `QRACER_CONFIG_DIR` → `./.qracer/
 Loader: `config/loader.py` (lazy singleton, mtime hot-reload). Models:
 `config/models.py` (pydantic).
 
+**Editing config** is schema-driven, so both front-ends stay in sync:
+- `config/settings_schema.py` declares each editable setting once (`Setting` + the
+  provider rows from `provider_settings()`). Add a setting here and it appears in
+  both the CLI and the web form.
+- `config/writer.py` is the single write path — `tomlkit` round-trip edits that
+  preserve comments, formatting, and nested tables (`[briefing]`, `[providers.*]`,
+  `[limits]`), plus a `credentials.env` upsert. Writes target `QRACER_CONFIG_DIR`
+  if set, else `~/.qracer/`.
+- Front-ends: `qracer config` (`get`/`set`/`providers` + a grouped listing) and the
+  web dashboard **Settings** tab (`web/settings_ui.py`). API keys are masked and
+  write-only. `qracer install` builds on the same writer.
+
 ## Storage & State
 
 | Path | Backing | Written by |
@@ -108,7 +120,7 @@ See [memory-system.md](memory-system.md) for the session-memory tiers.
 | Tools | `tools/pipeline.py` | uniform `ToolResult`-returning tool wrappers |
 | Daemon | `server.py`, `task_executor.py`, `alert_monitor.py`, `autonomous.py` | `qracer serve` ([serve.md](serve.md), [schedule.md](schedule.md)) |
 | Custom agents | `agents_store.py`, `agent_runner.py`, `agent_monitor.py` | prompt-defined autonomous agents ([custom-agents.md](custom-agents.md)) |
-| Web | `web/` | FastAPI API + NiceGUI agent-config UI |
+| Web | `web/` | FastAPI API + NiceGUI dashboard (read-only status + editable Agents & Settings) |
 | Notifications | `notifications/` | Telegram send + inbound poller |
 
 ## Roadmap — grounded investor harness
