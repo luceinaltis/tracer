@@ -44,19 +44,26 @@ class TestInstall:
         assert (home_dir / "credentials.env").exists()
         assert "Setup complete" in result.output
 
-    def test_install_skips_existing_files(self, tmp_path: Path) -> None:
+    def test_install_keeps_existing_files_but_applies_choice(self, tmp_path: Path) -> None:
+        # A pre-existing, valid config with a custom marker. Re-running install must
+        # keep the file (and the marker/comment) but surgically apply the new choice.
         home_dir = tmp_path / ".qracer"
         home_dir.mkdir()
-        (home_dir / "config.toml").write_text("existing")
+        (home_dir / "config.toml").write_text(
+            '# my custom note\ndefault_mode = "deep"\nllm_provider = "openai"\n',
+            encoding="utf-8",
+        )
 
         runner = CliRunner()
         with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["install"], input="1\n\nUSD\n")
+            result = runner.invoke(main, ["install"], input="1\n\nUSD\n")  # choice 1 = claude
 
         assert result.exit_code == 0
         assert "already exists" in result.output
-        # Existing file should not be overwritten
-        assert (home_dir / "config.toml").read_text() == "existing"
+        content = (home_dir / "config.toml").read_text(encoding="utf-8")
+        assert "# my custom note" in content  # comment preserved
+        assert 'default_mode = "deep"' in content  # untouched key preserved
+        assert 'llm_provider = "claude"' in content  # wizard choice applied via surgical upsert
 
     def test_install_writes_credentials(self, tmp_path: Path) -> None:
         home_dir = tmp_path / ".qracer"
@@ -250,3 +257,15 @@ class TestConfig:
         assert "enabled = true" in providers.split("[providers.dart]", 1)[1]
         creds = (d / "credentials.env").read_text(encoding="utf-8")
         assert "DART_API_KEY=MY_DART_KEY" in creds
+
+    def test_provider_key_round_trips_through_load_config(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # Regression: a key set via the CLI under QRACER_CONFIG_DIR must actually be
+        # read back by load_config() (writer and loader must resolve the same dir).
+        self._env(monkeypatch, tmp_path)
+        CliRunner().invoke(main, ["config", "providers"], input="dart\ny\nROUNDTRIP\n\n")
+        from qracer.config.loader import load_config
+
+        cfg = load_config(force_reload=True)
+        assert cfg.credentials.get("DART_API_KEY") == "ROUNDTRIP"

@@ -14,12 +14,14 @@ so the helpful default comments are preserved.
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 from pathlib import Path
 from typing import Any
 
 import tomlkit
+from dotenv import dotenv_values
 from tomlkit.items import Table
 
 from qracer.config.loader import _user_dir
@@ -75,7 +77,9 @@ def _set_dotted(doc: tomlkit.TOMLDocument, dotted_key: str, value: object) -> No
     node: Any = doc
     for part in parts[:-1]:
         child = node.get(part)
-        if child is None:
+        # Create (or replace a stray scalar with) an intermediate table so a
+        # malformed file like `briefing = "x"` can't crash the write.
+        if not isinstance(child, Table):
             child = tomlkit.table()
             node[part] = child
         node = child
@@ -114,13 +118,12 @@ def _schema_provider_block(name: str) -> Table:
     """A fresh table seeded from the schema's ``[providers.<name>]`` (defaults if unknown)."""
     schema = _load_doc(_SCHEMA_DIR / "providers.toml")
     src = schema.get("providers", {}).get(name)
-    table = tomlkit.table()
     if src is not None:
-        for key, val in dict(src).items():
-            table[key] = val
-    else:  # unknown provider — minimal sane defaults
-        table["enabled"] = False
-        table["priority"] = 50
+        # Deep-copy the schema item so its comments/formatting come along.
+        return copy.deepcopy(src)
+    table = tomlkit.table()  # unknown provider — minimal sane defaults
+    table["enabled"] = False
+    table["priority"] = 50
     return table
 
 
@@ -197,18 +200,15 @@ def unset_credential(env_key: str, config_dir: Path | None = None) -> Path:
 
 
 def read_credentials(config_dir: Path | None = None) -> dict[str, str]:
-    """Return the ``credentials.env`` key/value pairs (empty if the file is absent)."""
+    """Return the ``credentials.env`` key/value pairs (empty if the file is absent).
+
+    Uses the same ``dotenv`` parser as the loader so the values match exactly
+    (quote stripping, ``export`` prefixes, inline comments).
+    """
     path = _credentials_path(config_dir)
     if not path.exists():
         return {}
-    result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, val = stripped.partition("=")
-        result[key.strip()] = val.strip()
-    return result
+    return {k: v for k, v in dotenv_values(path).items() if v is not None}
 
 
 __all__ = [

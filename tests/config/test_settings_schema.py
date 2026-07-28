@@ -79,7 +79,10 @@ class TestProviderSettings:
             )
         )
 
-    def test_overlays_config_over_schema(self) -> None:
+    def test_overlays_config_over_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # has_key falls back to os.environ, so neutralize any real key in the env
+        # to keep the assertion hermetic.
+        monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
         rows = ss.provider_settings(self._cfg(), credentials={"DART_API_KEY": "x"})
         by_name = {r.name: r for r in rows}
         # dart reflects the user's config + credential presence.

@@ -138,18 +138,15 @@ def install() -> None:
     # 1. Create directory
     home_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Copy default config files (remembering which we actually created, so the
-    #    wizard's choices below only touch files we own — never an existing setup).
-    created: dict[str, bool] = {}
+    # 2. Copy default config files for any that don't exist yet (existing files are
+    #    left in place; the wizard's choices below are applied as surgical, comment-
+    #    preserving upserts via the writer, so re-running install is safe).
     for name in ("config.toml", "providers.toml", "portfolio.toml"):
-        src = SCHEMA_DIR / name
         dest = home_dir / name
         if dest.exists():
-            created[name] = False
-            click.echo(f"  {name} already exists, skipping.")
+            click.echo(f"  {name} already exists, keeping it.")
         else:
-            shutil.copy2(src, dest)
-            created[name] = True
+            shutil.copy2(SCHEMA_DIR / name, dest)
             click.echo(f"  Created {name}")
 
     # 3. LLM provider selection
@@ -181,22 +178,18 @@ def install() -> None:
         writer.set_credential(chosen_env, creds[chosen_env], config_dir=home_dir)
     (home_dir / "credentials.env").touch(exist_ok=True)  # always present, even if empty
 
-    # 7. Enable the chosen LLM provider (disable the others) — only in a providers.toml
-    #    we just created, so re-running install never disturbs an existing setup.
-    if created["providers.toml"]:
-        for name, _, _ in llm_choices:
-            writer.set_provider_field(name, "enabled", name == chosen_name, config_dir=home_dir)
+    # 7. Enable the chosen LLM provider, disable the others (surgical upsert).
+    for name, _, _ in llm_choices:
+        writer.set_provider_field(name, "enabled", name == chosen_name, config_dir=home_dir)
 
-    # 7b. Persist provider (+ OpenRouter model) choice to a freshly-created config.toml.
-    if created["config.toml"]:
-        writer.set_config_value("llm_provider", chosen_name, config_dir=home_dir)
-        if openrouter_model:
-            writer.set_config_value("llm_model", openrouter_model, config_dir=home_dir)
+    # 7b. Persist provider (+ OpenRouter model) choice to config.toml.
+    writer.set_config_value("llm_provider", chosen_name, config_dir=home_dir)
     if openrouter_model:
+        writer.set_config_value("llm_model", openrouter_model, config_dir=home_dir)
         click.echo(f"  Model set to {openrouter_model}")
 
-    # 8. Update portfolio currency if non-default (only in a portfolio.toml we created).
-    if created["portfolio.toml"] and currency and currency != "USD":
+    # 8. Update portfolio currency if non-default.
+    if currency and currency != "USD":
         writer.set_portfolio_value("currency", currency, config_dir=home_dir)
 
     click.echo(f"\n✓ Setup complete! {chosen_label} enabled as LLM provider.")
@@ -320,6 +313,8 @@ def config_cmd(ctx: click.Context, set_pair: str | None) -> None:
     enable/disable providers and set their API keys interactively.
     """
     if set_pair is not None:  # backward-compatible `config --set key=value`
+        if ctx.invoked_subcommand is not None:
+            raise click.UsageError("--set cannot be combined with a subcommand.")
         if "=" not in set_pair:
             raise click.BadParameter("Expected key=value format", param_hint="--set")
         key, _, value = set_pair.partition("=")

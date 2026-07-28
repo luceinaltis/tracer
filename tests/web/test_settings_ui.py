@@ -47,6 +47,40 @@ class TestApplyScalar:
         with pytest.raises(ValueError, match="Invalid cron"):
             settings_ui.apply_scalar(ss.require("briefing.schedule"), "nope", config_dir=tmp_path)
 
+    def test_blank_numeric_raises_valueerror_not_typeerror(self, tmp_path: Path) -> None:
+        # A cleared ui.number yields None; must surface as ValueError, not TypeError.
+        with pytest.raises(ValueError, match="must be a number"):
+            settings_ui.apply_scalar(ss.require("max_iterations"), None, config_dir=tmp_path)
+
+
+class TestApplyGroup:
+    def test_writes_all_when_valid(self, tmp_path: Path) -> None:
+        items = [
+            (ss.require("briefing.top_n"), 9.0),
+            (ss.require("briefing.schedule"), "0 9 * * *"),
+        ]
+        settings_ui.apply_group(items, config_dir=tmp_path)
+        text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+        assert "top_n = 9" in text and 'schedule = "0 9 * * *"' in text
+
+    def test_atomic_no_partial_write_on_validation_error(self, tmp_path: Path) -> None:
+        # Second item is invalid; nothing (not even the valid first item) is written.
+        items = [
+            (ss.require("briefing.top_n"), 7),
+            (ss.require("briefing.schedule"), "not a cron"),
+        ]
+        with pytest.raises(ValueError, match="Invalid cron"):
+            settings_ui.apply_group(items, config_dir=tmp_path)
+        assert not (tmp_path / "config.toml").exists()
+
+
+class TestApplyProviderValidation:
+    def test_blank_priority_raises_and_writes_nothing(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Priority must be a number"):
+            settings_ui.apply_provider("dart", True, None, "DART_API_KEY", "K", config_dir=tmp_path)
+        assert not (tmp_path / "providers.toml").exists()
+        assert not (tmp_path / "credentials.env").exists()
+
 
 class TestApplyProvider:
     def test_enables_sets_priority_and_key(self, tmp_path: Path) -> None:
