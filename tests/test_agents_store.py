@@ -211,7 +211,7 @@ class TestAgentStore:
 
         # Make cron due by rewriting next_run_at to the past directly.
         store.get(cron.id)
-        for a in store._agents:  # type: ignore[attr-defined]
+        for a in store._items:  # type: ignore[attr-defined]
             if a.id == cron.id:
                 a.next_run_at = (now - timedelta(minutes=1)).isoformat()
 

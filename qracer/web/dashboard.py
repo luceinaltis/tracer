@@ -9,14 +9,13 @@ the one editable section (reused from ``qracer.web.ui``).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from qracer.config.loader import load_config
-from qracer.data.providers import PriceProvider
+from qracer.data.prices import fetch_prices
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -111,24 +110,6 @@ def _thesis_rows(theses: "list[PersistedThesis]") -> list[dict]:
         }
         for t in theses
     ]
-
-
-async def _fetch_prices(
-    data_registry: "DataRegistry | None", tickers: list[str]
-) -> dict[str, float]:
-    """Best-effort concurrent price fetch; skips tickers that fail."""
-    if data_registry is None or not tickers:
-        return {}
-
-    async def one(ticker: str) -> tuple[str, float | None]:
-        try:
-            price = await data_registry.async_get_with_fallback(PriceProvider, "get_price", ticker)
-            return ticker, float(price)
-        except Exception:  # noqa: BLE001 - best-effort per ticker
-            return ticker, None
-
-    results = await asyncio.gather(*(one(t) for t in tickers))
-    return {t: p for t, p in results if p is not None}
 
 
 def mount(
@@ -301,7 +282,7 @@ def mount(
         async def refresh_all() -> None:
             cfg = load_config()
             tickers = sorted({h.ticker for h in cfg.portfolio.holdings} | set(watchlist.tickers))
-            new_prices = await _fetch_prices(data_registry, tickers)
+            new_prices = await fetch_prices(data_registry, tickers)
             if new_prices:
                 prices.update(new_prices)
             for section in (

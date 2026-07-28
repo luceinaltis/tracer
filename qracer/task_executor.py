@@ -7,10 +7,10 @@ Can be driven by the REPL heartbeat or the ``qracer heartbeat`` CLI command.
 from __future__ import annotations
 
 import logging
-import time
 
 from qracer.data.registry import DataRegistry
 from qracer.llm.registry import LLMRegistry
+from qracer.monitors.base import PollingMonitor
 from qracer.tasks import (
     Task,
     TaskActionType,
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CHECK_INTERVAL = 30  # seconds
 
 
-class TaskExecutor:
+class TaskExecutor(PollingMonitor):
     """Evaluates due tasks and dispatches their actions.
 
     Usage::
@@ -44,26 +44,19 @@ class TaskExecutor:
         engine: object | None = None,
         check_interval: float = DEFAULT_CHECK_INTERVAL,
     ) -> None:
+        super().__init__(check_interval)
         self._store = store
         self._data = data_registry
         self._llm = llm_registry
         self._engine = engine
-        self._check_interval = check_interval
-        self._last_check: float | None = None
 
     @property
     def store(self) -> TaskStore:
         return self._store
 
-    def should_check(self) -> bool:
-        """Return True if enough time has elapsed since the last check."""
-        if self._last_check is None:
-            return True
-        return (time.monotonic() - self._last_check) >= self._check_interval
-
     async def check(self) -> list[TaskResult]:
         """Execute all due tasks and return results."""
-        self._last_check = time.monotonic()
+        self._mark_checked()
         due = self._store.get_due()
         if not due:
             return []

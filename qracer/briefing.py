@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from croniter import croniter
 
-from qracer.data.providers import PriceProvider
+from qracer.data.prices import fetch_prices
 from qracer.llm.providers import CompletionRequest, Message, Role
+from qracer.monitors.base import PollingMonitor
 from qracer.notifications.providers import Notification, NotificationCategory
 
 if TYPE_CHECKING:
@@ -119,7 +119,7 @@ class BriefingComposer:
         watch = list(self._watchlist.tickers)
         all_tickers = list(dict.fromkeys([h.ticker for h in holdings] + watch))
 
-        prices = await self._fetch_prices(all_tickers)
+        prices = await fetch_prices(self._data, all_tickers)
 
         # Portfolio snapshot (fall back to avg_cost so the snapshot always builds).
         if holdings:
@@ -156,20 +156,6 @@ class BriefingComposer:
         state.news_lines = await self._news_lines(all_tickers[:_MAX_NEWS_TICKERS])
 
         return state
-
-    async def _fetch_prices(self, tickers: list[str]) -> dict[str, float]:
-        if not tickers:
-            return {}
-
-        async def one(ticker: str) -> tuple[str, float | None]:
-            try:
-                price = await self._data.async_get_with_fallback(PriceProvider, "get_price", ticker)
-                return ticker, float(price)
-            except Exception:  # noqa: BLE001 - best-effort per ticker
-                return ticker, None
-
-        results = await asyncio.gather(*(one(t) for t in tickers))
-        return {t: p for t, p in results if p is not None}
 
     def _thesis_lines(self) -> list[str]:
         assert self._fact_store is not None
@@ -225,7 +211,7 @@ class BriefingComposer:
         return response.content.strip()
 
 
-class BriefingScheduler:
+class BriefingScheduler(PollingMonitor):
     """Fires the composer once per scheduled cron occurrence and pushes the result."""
 
     def __init__(
@@ -237,14 +223,13 @@ class BriefingScheduler:
         timezone: "ZoneInfo | None" = None,
         check_interval: float = DEFAULT_CHECK_INTERVAL,
     ) -> None:
+        super().__init__(check_interval)
         # croniter raises on an invalid expression — validate eagerly.
         croniter(cron, self._now(timezone))
         self._composer = composer
         self._notifications = notifications
         self._cron = cron
         self._tz = timezone
-        self._check_interval = check_interval
-        self._last_check: float | None = None
         # Don't backfill on startup: only fire on the NEXT occurrence.
         self._last_slot: datetime = self._current_slot()
 
@@ -256,14 +241,9 @@ class BriefingScheduler:
         """Most recent scheduled datetime at or before now."""
         return croniter(self._cron, self._now(self._tz)).get_prev(datetime)
 
-    def should_check(self) -> bool:
-        if self._last_check is None:
-            return True
-        return (time.monotonic() - self._last_check) >= self._check_interval
-
     async def check(self) -> str | None:
         """If a scheduled slot has newly passed, compose and push the briefing."""
-        self._last_check = time.monotonic()
+        self._mark_checked()
         slot = self._current_slot()
         if slot == self._last_slot:
             return None

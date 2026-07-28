@@ -5,14 +5,14 @@ Persisted as ``alerts.json`` in the user's ``~/.qracer/`` directory.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
 from typing import Any
+
+from qracer.storage.json_store import JsonListStore
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class AlertResult:
     message: str
 
 
-class AlertStore:
+class AlertStore(JsonListStore[Alert]):
     """File-backed storage for price alerts.
 
     Usage::
@@ -87,16 +87,13 @@ class AlertStore:
         store.mark_triggered(alert.id)
     """
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._mtime: float = 0.0
-        self._alerts: list[Alert] = self._load()
+    _label = "alerts"
 
     @property
     def alerts(self) -> list[Alert]:
         """All alerts."""
         self._maybe_reload()
-        return list(self._alerts)
+        return list(self._items)
 
     def create(
         self,
@@ -113,35 +110,24 @@ class AlertStore:
             threshold=threshold,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
-        self._alerts.append(alert)
+        self._items.append(alert)
         self._save()
         return alert
-
-    def _maybe_reload(self) -> None:
-        """Re-read from disk if another process modified the file."""
-        if not self._path.exists():
-            return
-        try:
-            current_mtime = self._path.stat().st_mtime
-        except OSError:
-            return
-        if current_mtime != self._mtime:
-            self._alerts = self._load()
 
     def get_active(self) -> list[Alert]:
         """Return all active (not yet triggered) alerts."""
         self._maybe_reload()
-        return [a for a in self._alerts if a.active]
+        return [a for a in self._items if a.active]
 
     def get_by_ticker(self, ticker: str) -> list[Alert]:
         """Return all alerts for a given ticker."""
         self._maybe_reload()
         upper = ticker.upper()
-        return [a for a in self._alerts if a.ticker == upper]
+        return [a for a in self._items if a.ticker == upper]
 
     def mark_triggered(self, alert_id: str, price: float | None = None) -> bool:
         """Mark an alert as triggered. Returns True if found and updated."""
-        for alert in self._alerts:
+        for alert in self._items:
             if alert.id == alert_id and alert.active:
                 alert.active = False
                 alert.triggered_at = datetime.now(timezone.utc).isoformat()
@@ -151,47 +137,24 @@ class AlertStore:
 
     def remove(self, alert_id: str) -> bool:
         """Remove an alert by ID. Returns True if found and removed."""
-        for i, alert in enumerate(self._alerts):
+        for i, alert in enumerate(self._items):
             if alert.id == alert_id:
-                self._alerts.pop(i)
+                self._items.pop(i)
                 self._save()
                 return True
         return False
 
     def clear(self) -> None:
         """Remove all alerts."""
-        self._alerts.clear()
+        self._items.clear()
         self._save()
 
-    def __len__(self) -> int:
-        return len(self._alerts)
-
-    def _load(self) -> list[Alert]:
-        if not self._path.exists():
-            return []
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            self._mtime = self._path.stat().st_mtime
-            if isinstance(data, list):
-                return [self._deserialize(item) for item in data if isinstance(item, dict)]
-        except (json.JSONDecodeError, OSError, KeyError, ValueError):
-            logger.warning("Failed to load alerts from %s", self._path)
-        return []
-
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = [self._serialize(a) for a in self._alerts]
-        self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        self._mtime = self._path.stat().st_mtime
-
-    @staticmethod
-    def _serialize(alert: Alert) -> dict[str, Any]:
+    def _serialize(self, alert: Alert) -> dict[str, Any]:
         d = asdict(alert)
         d["condition"] = alert.condition.value
         return d
 
-    @staticmethod
-    def _deserialize(data: dict[str, Any]) -> Alert:
+    def _deserialize(self, data: dict[str, Any]) -> Alert:
         return Alert(
             id=data["id"],
             ticker=data["ticker"],

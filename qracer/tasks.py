@@ -6,15 +6,15 @@ Supports one-time and recurring schedules without external dependencies.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from pathlib import Path
 from typing import Any
+
+from qracer.storage.json_store import JsonListStore
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ class TaskResult:
 # ---------------------------------------------------------------------------
 
 
-class TaskStore:
+class TaskStore(JsonListStore[Task]):
     """File-backed storage for scheduled tasks.
 
     Usage::
@@ -213,14 +213,11 @@ class TaskStore:
         due = store.get_due()
     """
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._mtime: float = 0.0
-        self._tasks: list[Task] = self._load()
+    _label = "tasks"
 
     @property
     def tasks(self) -> list[Task]:
-        return list(self._tasks)
+        return list(self._items)
 
     def create(
         self,
@@ -243,37 +240,26 @@ class TaskStore:
             created_at=now.isoformat(),
             next_run_at=next_run,
         )
-        self._tasks.append(task)
+        self._items.append(task)
         self._save()
         return task
-
-    def _maybe_reload(self) -> None:
-        """Re-read from disk if another process modified the file."""
-        if not self._path.exists():
-            return
-        try:
-            current_mtime = self._path.stat().st_mtime
-        except OSError:
-            return
-        if current_mtime != self._mtime:
-            self._tasks = self._load()
 
     def get_due(self, now: datetime | None = None) -> list[Task]:
         """Return tasks that are due for execution."""
         self._maybe_reload()
-        return [t for t in self._tasks if t.is_due(now)]
+        return [t for t in self._items if t.is_due(now)]
 
     def get_active(self) -> list[Task]:
         """Return tasks that are enabled and not completed."""
         self._maybe_reload()
-        return [t for t in self._tasks if t.enabled and t.status != TaskStatus.COMPLETED]
+        return [t for t in self._items if t.enabled and t.status != TaskStatus.COMPLETED]
 
     def get_all(self) -> list[Task]:
         self._maybe_reload()
-        return list(self._tasks)
+        return list(self._items)
 
     def mark_running(self, task_id: str) -> bool:
-        for t in self._tasks:
+        for t in self._items:
             if t.id == task_id:
                 t.status = TaskStatus.RUNNING
                 self._save()
@@ -281,7 +267,7 @@ class TaskStore:
         return False
 
     def mark_completed(self, task_id: str) -> bool:
-        for t in self._tasks:
+        for t in self._items:
             if t.id == task_id:
                 t.status = TaskStatus.COMPLETED
                 t.last_run_at = datetime.now(timezone.utc).isoformat()
@@ -292,7 +278,7 @@ class TaskStore:
         return False
 
     def mark_failed(self, task_id: str, error: str) -> bool:
-        for t in self._tasks:
+        for t in self._items:
             if t.id == task_id:
                 t.status = TaskStatus.FAILED
                 t.last_run_at = datetime.now(timezone.utc).isoformat()
@@ -304,7 +290,7 @@ class TaskStore:
 
     def advance_recurring(self, task_id: str) -> bool:
         """Recompute next_run for a recurring task and reset to PENDING."""
-        for t in self._tasks:
+        for t in self._items:
             if t.id == task_id and t.schedule_type == TaskScheduleType.RECURRING:
                 now = datetime.now(timezone.utc)
                 t.next_run_at = parse_schedule(t.schedule_spec, after=now).isoformat()
@@ -315,7 +301,7 @@ class TaskStore:
 
     def cancel(self, task_id: str) -> bool:
         """Disable a task. Returns True if found."""
-        for t in self._tasks:
+        for t in self._items:
             if t.id == task_id:
                 t.enabled = False
                 t.status = TaskStatus.COMPLETED
@@ -325,44 +311,21 @@ class TaskStore:
 
     def remove(self, task_id: str) -> bool:
         """Remove a task entirely. Returns True if found."""
-        for i, t in enumerate(self._tasks):
+        for i, t in enumerate(self._items):
             if t.id == task_id:
-                self._tasks.pop(i)
+                self._items.pop(i)
                 self._save()
                 return True
         return False
 
-    def __len__(self) -> int:
-        return len(self._tasks)
-
-    def _load(self) -> list[Task]:
-        if not self._path.exists():
-            return []
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            self._mtime = self._path.stat().st_mtime
-            if isinstance(data, list):
-                return [self._deserialize(item) for item in data if isinstance(item, dict)]
-        except (json.JSONDecodeError, OSError, KeyError, ValueError):
-            logger.warning("Failed to load tasks from %s", self._path)
-        return []
-
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = [self._serialize(t) for t in self._tasks]
-        self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        self._mtime = self._path.stat().st_mtime
-
-    @staticmethod
-    def _serialize(task: Task) -> dict[str, Any]:
+    def _serialize(self, task: Task) -> dict[str, Any]:
         d = asdict(task)
         d["action_type"] = task.action_type.value
         d["schedule_type"] = task.schedule_type.value
         d["status"] = task.status.value
         return d
 
-    @staticmethod
-    def _deserialize(data: dict[str, Any]) -> Task:
+    def _deserialize(self, data: dict[str, Any]) -> Task:
         return Task(
             id=data["id"],
             action_type=TaskActionType(data["action_type"]),
