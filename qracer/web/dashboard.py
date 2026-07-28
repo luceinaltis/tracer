@@ -144,6 +144,7 @@ def mount(
     from qracer.alerts import AlertStore
     from qracer.tasks import TaskStore
     from qracer.watchlist import Watchlist
+    from qracer.web.settings_ui import render_settings_section
     from qracer.web.ui import render_agents_section
 
     watchlist = Watchlist(base_dir / "watchlist.json")
@@ -360,6 +361,7 @@ def mount(
             t_tasks = ui.tab("Tasks")
             t_agents = ui.tab("Agents")
             t_theses = ui.tab("Theses")
+            t_settings = ui.tab("Settings")
 
         with ui.tab_panels(tabs, value=t_overview).classes("w-full"):
             with ui.tab_panel(t_overview):
@@ -376,6 +378,8 @@ def mount(
                 render_agents_section(base_dir)
             with ui.tab_panel(t_theses):
                 theses_section()
+            with ui.tab_panel(t_settings):
+                render_settings_section(base_dir)
 
         # Populate off the render path so the page shows immediately, and let NiceGUI
         # own the tasks (a bare asyncio.create_task result can be garbage-collected).

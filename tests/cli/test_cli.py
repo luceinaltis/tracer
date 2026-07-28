@@ -185,48 +185,68 @@ class TestStatus:
 
 
 class TestConfig:
-    def test_config_show(self) -> None:
-        runner = CliRunner()
-        with patch("qracer.cli.load_config") as mock_load:
-            from qracer.config.models import QracerConfig
+    """The `config` command is isolated via QRACER_CONFIG_DIR, which both the
+    loader (reads) and the writer (writes) honor."""
 
-            mock_load.return_value = QracerConfig()
-            result = runner.invoke(main, ["config"])
+    def _env(self, monkeypatch, tmp_path: Path) -> Path:
+        d = tmp_path / ".qracer"
+        d.mkdir()
+        monkeypatch.setenv("QRACER_CONFIG_DIR", str(d))
+        return d
 
+    def test_config_show_lists_groups_and_providers(self, monkeypatch, tmp_path: Path) -> None:
+        self._env(monkeypatch, tmp_path)
+        result = CliRunner().invoke(main, ["config"])
         assert result.exit_code == 0
-        assert '"app"' in result.output
+        assert "General:" in result.output
+        assert "default_mode" in result.output
+        assert "Providers:" in result.output
 
-    def test_config_set(self, tmp_path: Path) -> None:
-        home_dir = tmp_path / ".qracer"
-        home_dir.mkdir()
-        (home_dir / "config.toml").write_text('default_mode = "quick"\n')
+    def test_config_set_nested_and_seeds_file(self, monkeypatch, tmp_path: Path) -> None:
+        d = self._env(monkeypatch, tmp_path)  # no config.toml yet
+        result = CliRunner().invoke(main, ["config", "set", "briefing.schedule", "0 9 * * *"])
+        assert result.exit_code == 0, result.output
+        assert "Set briefing.schedule = 0 9 * * *" in result.output
+        text = (d / "config.toml").read_text(encoding="utf-8")
+        assert "[briefing]" in text and 'schedule = "0 9 * * *"' in text
 
-        runner = CliRunner()
-        with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["config", "--set", "default_mode=deep"])
-
+    def test_config_set_compat_flag(self, monkeypatch, tmp_path: Path) -> None:
+        d = self._env(monkeypatch, tmp_path)
+        result = CliRunner().invoke(main, ["config", "--set", "default_mode=deep"])
         assert result.exit_code == 0
-        assert "Set default_mode=deep" in result.output
-        content = (home_dir / "config.toml").read_text()
-        assert "deep" in content
+        assert 'default_mode = "deep"' in (d / "config.toml").read_text(encoding="utf-8")
 
-    def test_config_set_bad_format(self, tmp_path: Path) -> None:
-        runner = CliRunner()
-        home_dir = tmp_path / ".qracer"
-        home_dir.mkdir()
-        (home_dir / "config.toml").write_text("")
+    def test_config_get(self, monkeypatch, tmp_path: Path) -> None:
+        self._env(monkeypatch, tmp_path)
+        CliRunner().invoke(main, ["config", "set", "max_iterations", "9"])
+        result = CliRunner().invoke(main, ["config", "get", "max_iterations"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "9"
 
-        with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["config", "--set", "noequals"])
+    def test_config_set_invalid_choice(self, monkeypatch, tmp_path: Path) -> None:
+        self._env(monkeypatch, tmp_path)
+        result = CliRunner().invoke(main, ["config", "set", "default_mode", "sideways"])
+        assert result.exit_code != 0
+        assert "must be one of" in result.output
 
+    def test_config_set_unknown_key(self, monkeypatch, tmp_path: Path) -> None:
+        self._env(monkeypatch, tmp_path)
+        result = CliRunner().invoke(main, ["config", "set", "bogus", "1"])
+        assert result.exit_code != 0
+        assert "Unknown setting" in result.output
+
+    def test_config_set_bad_compat_format(self, monkeypatch, tmp_path: Path) -> None:
+        self._env(monkeypatch, tmp_path)
+        result = CliRunner().invoke(main, ["config", "--set", "noequals"])
         assert result.exit_code != 0
 
-    def test_config_set_no_config_file(self, tmp_path: Path) -> None:
-        home_dir = tmp_path / ".qracer"
-        home_dir.mkdir()  # No config.toml
-
-        runner = CliRunner()
-        with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["config", "--set", "key=val"])
-
-        assert result.exit_code != 0
+    def test_config_providers_enables_and_sets_key(self, monkeypatch, tmp_path: Path) -> None:
+        d = self._env(monkeypatch, tmp_path)
+        # Configure 'dart': enable = yes, enter a key, then blank to finish.
+        result = CliRunner().invoke(main, ["config", "providers"], input="dart\ny\nMY_DART_KEY\n\n")
+        assert result.exit_code == 0, result.output
+        providers = (d / "providers.toml").read_text(encoding="utf-8")
+        assert "[providers.dart]" in providers
+        assert "enabled = true" in providers.split("[providers.dart]", 1)[1]
+        creds = (d / "credentials.env").read_text(encoding="utf-8")
+        assert "DART_API_KEY=MY_DART_KEY" in creds

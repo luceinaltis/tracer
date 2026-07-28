@@ -30,6 +30,20 @@ qracer install
 qracer repl
 ```
 
+### Configuration
+
+Settings live in `~/.qracer/` and can be edited from the terminal or the web dashboard —
+both share one schema and a comment-preserving writer, so nothing hand-edited is lost:
+
+```bash
+qracer config                       # list all settings, grouped, with current values
+qracer config set briefing.schedule "0 9 * * *"
+qracer config providers             # enable/disable providers and set API keys, interactively
+```
+
+Or open the web dashboard's **Settings** tab (`qracer web`, localhost only) to toggle
+providers, enter API keys (masked), and change app/briefing/portfolio settings from a form.
+
 ## Architecture
 
 ```text
@@ -60,7 +74,7 @@ qracer/
 ├── tools/          # Pipeline tool wrappers (ToolResult)
 ├── config/         # .qracer/ config loading and pydantic models
 ├── notifications/  # Telegram send + inbound poller
-├── web/            # FastAPI API + NiceGUI custom-agent config UI
+├── web/            # FastAPI API + NiceGUI dashboard (status + editable Agents/Settings)
 ├── models/         # Domain models (ToolResult, TradeThesis)
 ├── agents/         # Legacy role classes (not wired into the live pipeline)
 ├── server.py       # `qracer serve` daemon loop
