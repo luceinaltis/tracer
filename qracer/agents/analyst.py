@@ -53,6 +53,7 @@ class Analyst(BaseAgent):
                         )
                     )
                 except Exception:
+                    logger.debug("Failed to fetch macro indicator %s", name, exc_info=True)
                     results.append(
                         ToolResult(
                             tool="macro",

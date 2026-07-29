@@ -12,7 +12,9 @@ key is shown as "set", never echoed back.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from qracer.config import settings_schema as ss
 from qracer.config import writer
@@ -113,15 +115,15 @@ def render_settings_section(base_dir: Path) -> None:
         for group in ss.groups():
             with ui.card().classes("w-full"):
                 ui.label(group).classes("font-bold")
-                widgets: dict[str, object] = {}
+                widgets: dict[str, Any] = {}
                 for setting in ss.APP_SETTINGS:
                     if setting.group != group:
                         continue
-                    widgets[setting.key] = _scalar_widget(ui, setting, ss.get_current(cfg, setting))
+                    widgets[setting.key] = _scalar_widget(setting, ss.get_current(cfg, setting))
 
                 def save_group(bound_widgets: dict = widgets) -> None:
                     items = [
-                        (setting, widget.value)  # type: ignore[attr-defined]
+                        (setting, widget.value)
                         for key, widget in bound_widgets.items()
                         if (setting := ss.find(key)) is not None
                     ]
@@ -142,63 +144,66 @@ def render_settings_section(base_dir: Path) -> None:
                 "text-gray-500 text-sm"
             )
             for row in ss.provider_settings(cfg):
-                _provider_card(ui, row, base_dir, settings_form.refresh)
+                _provider_card(row, base_dir, settings_form.refresh)
 
     settings_form()
 
 
-def _scalar_widget(ui: object, setting: ss.Setting, current: object) -> object:
+def _scalar_widget(setting: ss.Setting, current: object) -> Any:
     """Build the input widget for a scalar setting, seeded with its current value."""
+    from nicegui import ui
+
     label = setting.label
     if setting.kind == "bool":
-        return ui.switch(label, value=bool(current))  # type: ignore[attr-defined]
+        return ui.switch(label, value=bool(current))
     if setting.kind == "choice":
-        return ui.select(list(setting.choices or ()), value=current, label=label).classes(  # type: ignore[attr-defined]
-            "w-64"
-        )
+        return ui.select(list(setting.choices or ()), value=current, label=label).classes("w-64")
+    num = cast("float | None", current)
     if setting.kind == "int":
-        return ui.number(label, value=current, format="%.0f", step=1).classes("w-64")  # type: ignore[attr-defined]
+        return ui.number(label, value=num, format="%.0f", step=1).classes("w-64")
     if setting.kind == "float":
-        return ui.number(label, value=current).classes("w-64")  # type: ignore[attr-defined]
+        return ui.number(label, value=num).classes("w-64")
     # str / cron
     text = "" if current is None else str(current)
-    widget = ui.input(label, value=text).classes("w-full")  # type: ignore[attr-defined]
+    widget = ui.input(label, value=text).classes("w-full")
     if setting.help:
         widget.tooltip(setting.help)
     return widget
 
 
-def _provider_card(ui: object, row: ss.ProviderRow, base_dir: Path, on_saved: object) -> None:
+def _provider_card(row: ss.ProviderRow, base_dir: Path, on_saved: Callable[[], object]) -> None:
     """Render one provider row: enabled switch, priority, masked key input, Save."""
-    with ui.card().classes("w-full"):  # type: ignore[attr-defined]
-        with ui.row().classes("items-center gap-4 w-full"):  # type: ignore[attr-defined]
-            ui.label(f"{row.name} ({row.kind})").classes("font-bold")  # type: ignore[attr-defined]
-            enabled = ui.switch("Enabled", value=row.enabled)  # type: ignore[attr-defined]
-            priority = ui.number("Priority", value=row.priority).classes("w-32")  # type: ignore[attr-defined]
+    from nicegui import ui
+
+    with ui.card().classes("w-full"):
+        with ui.row().classes("items-center gap-4 w-full"):
+            ui.label(f"{row.name} ({row.kind})").classes("font-bold")
+            enabled = ui.switch("Enabled", value=row.enabled)
+            priority = ui.number("Priority", value=row.priority).classes("w-32")
         key_input = None
         if row.api_key_env:
             placeholder = "•••• set — leave blank to keep" if row.has_key else "not set"
-            key_input = ui.input(  # type: ignore[attr-defined]
-                row.api_key_env, password=True, placeholder=placeholder
-            ).classes("w-full")
+            key_input = ui.input(row.api_key_env, password=True, placeholder=placeholder).classes(
+                "w-full"
+            )
 
         def save(
             name: str = row.name,
             env: str | None = row.api_key_env,
-            en: object = enabled,
-            prio: object = priority,
-            key_widget: object = key_input,
+            en: Any = enabled,
+            prio: Any = priority,
+            key_widget: Any = key_input,
         ) -> None:
-            key_value = (key_widget.value or "").strip() if key_widget is not None else ""  # type: ignore[attr-defined]
+            key_value = (key_widget.value or "").strip() if key_widget is not None else ""
             try:
-                apply_provider(name, en.value, prio.value, env, key_value, config_dir=base_dir)  # type: ignore[attr-defined]
+                apply_provider(name, en.value, prio.value, env, key_value, config_dir=base_dir)
             except ValueError as exc:
-                ui.notify(str(exc), type="negative")  # type: ignore[attr-defined]
+                ui.notify(str(exc), type="negative")
                 return
-            ui.notify(f"Saved {name}", type="positive")  # type: ignore[attr-defined]
-            on_saved()  # type: ignore[operator]
+            ui.notify(f"Saved {name}", type="positive")
+            on_saved()
 
-        ui.button("Save", on_click=save).props("color=primary flat")  # type: ignore[attr-defined]
+        ui.button("Save", on_click=save).props("color=primary flat")
 
 
 __all__ = ["apply_group", "apply_provider", "apply_scalar", "render_settings_section"]
