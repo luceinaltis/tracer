@@ -36,6 +36,7 @@ from qracer.config.models import (
     ProvidersConfig,
     QracerConfig,
 )
+from qracer.errors import QracerError
 
 _CONFIG_DIR_NAME = ".qracer"
 _CREDENTIALS_FILE = "credentials.env"
@@ -91,7 +92,7 @@ def resolve_config_dirs() -> list[Path]:
     return [d for d in candidates if d.is_dir()]
 
 
-class ConfigParseError(Exception):
+class ConfigParseError(QracerError):
     """Raised when a TOML configuration file exists but cannot be parsed."""
 
 
