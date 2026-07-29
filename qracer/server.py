@@ -9,19 +9,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from qracer.agent_monitor import AgentMonitor
 from qracer.alert_monitor import AlertMonitor
-from qracer.alerts import AlertCondition
 from qracer.autonomous import AutonomousMonitor
 from qracer.briefing import BriefingScheduler
+from qracer.notifications.bot_commands import BotCommandHandler
 from qracer.notifications.providers import Notification, NotificationCategory
 from qracer.notifications.registry import NotificationRegistry
 from qracer.notifications.telegram_poller import BotCommand, TelegramBotPoller
 from qracer.task_executor import TaskExecutor
-from qracer.tasks import TaskActionType
 
 logger = logging.getLogger(__name__)
+
+# A monitor paired with the coroutine that handles one round of its results.
+_MonitorEntry = tuple[Any, Callable[[Any], Awaitable[None]]]
 
 
 class Server:
@@ -57,6 +61,22 @@ class Server:
         self._shutdown_event = asyncio.Event()
         self._started_at: float | None = None
 
+        # Each monitor paired with the coroutine handling one round of its results.
+        # Adding a monitor means one entry here — the tick loop stays untouched.
+        self._monitors: list[_MonitorEntry] = [
+            (alert_monitor, self._handle_alert_results),
+            (task_executor, self._handle_task_results),
+        ]
+        if autonomous_monitor is not None:
+            self._monitors.append((autonomous_monitor, self._handle_autonomous_results))
+        if agent_monitor is not None:
+            self._monitors.append((agent_monitor, self._handle_agent_results))
+        if briefing_scheduler is not None:
+            self._monitors.append((briefing_scheduler, self._handle_briefing_result))
+
+        # Inbound Telegram bot commands are a separate concern from the tick loop.
+        self._bot = BotCommandHandler(alert_monitor.store, task_executor.store, self._status_text)
+
     async def run(self) -> None:
         """Main loop — runs until shutdown() is called."""
         logger.info("Server started (tick=%.1fs)", self._tick_interval)
@@ -75,67 +95,16 @@ class Server:
         logger.info("Server stopped")
 
     async def _tick(self) -> None:
-        """Single heartbeat — check alerts and tasks."""
-        if self._alert_monitor.should_check():
+        """Single heartbeat — poll every due monitor, then inbound bot commands."""
+        for monitor, handle in self._monitors:
+            if not monitor.should_check():
+                continue
             try:
-                triggered = await self._alert_monitor.check()
-                for result in triggered:
-                    logger.info("Alert triggered: %s", result.message)
-                    await self._notify(
-                        NotificationCategory.PRICE_ALERT,
-                        result.message,
-                        result.message,
-                    )
+                results = await monitor.check()
             except Exception:
-                logger.debug("Alert check failed", exc_info=True)
-
-        if self._task_executor.should_check():
-            try:
-                results = await self._task_executor.check()
-                for r in results:
-                    if r.success:
-                        logger.info("Task completed: %s", r.task.describe())
-                    else:
-                        logger.warning("Task failed: %s — %s", r.task.describe(), r.error)
-                        await self._notify(
-                            NotificationCategory.AUTONOMOUS_MODE,
-                            f"Task failed: {r.task.describe()}",
-                            r.error or "unknown error",
-                        )
-            except Exception:
-                logger.debug("Task check failed", exc_info=True)
-
-        if self._autonomous_monitor and self._autonomous_monitor.should_check():
-            try:
-                auto_alerts = await self._autonomous_monitor.check()
-                for alert in auto_alerts:
-                    logger.info("Autonomous alert: %s", alert.summary)
-                    await self._notify(
-                        NotificationCategory.AUTONOMOUS_MODE,
-                        f"[{alert.severity.value.upper()}] {alert.ticker}",
-                        alert.summary,
-                    )
-            except Exception:
-                logger.debug("Autonomous check failed", exc_info=True)
-
-        if self._agent_monitor and self._agent_monitor.should_check():
-            try:
-                agent_results = await self._agent_monitor.check()
-                for ar in agent_results:
-                    if ar.ok:
-                        logger.info("Agent ran: %s [%s]", ar.name, ar.model)
-                    else:
-                        logger.warning("Agent failed: %s — %s", ar.name, ar.error)
-            except Exception:
-                logger.debug("Agent check failed", exc_info=True)
-
-        if self._briefing_scheduler and self._briefing_scheduler.should_check():
-            try:
-                sent = await self._briefing_scheduler.check()
-                if sent:
-                    logger.info("Daily briefing pushed")
-            except Exception:
-                logger.debug("Briefing check failed", exc_info=True)
+                logger.debug("%s check failed", type(monitor).__name__, exc_info=True)
+                continue
+            await handle(results)
 
         if self._telegram_poller is not None:
             try:
@@ -145,6 +114,45 @@ class Server:
                 commands = []
             for command in commands:
                 await self._handle_bot_command(command)
+
+    # -- per-monitor result handlers ------------------------------------
+
+    async def _handle_alert_results(self, triggered: list) -> None:
+        for result in triggered:
+            logger.info("Alert triggered: %s", result.message)
+            await self._notify(NotificationCategory.PRICE_ALERT, result.message, result.message)
+
+    async def _handle_task_results(self, results: list) -> None:
+        for r in results:
+            if r.success:
+                logger.info("Task completed: %s", r.task.describe())
+            else:
+                logger.warning("Task failed: %s — %s", r.task.describe(), r.error)
+                await self._notify(
+                    NotificationCategory.AUTONOMOUS_MODE,
+                    f"Task failed: {r.task.describe()}",
+                    r.error or "unknown error",
+                )
+
+    async def _handle_autonomous_results(self, auto_alerts: list) -> None:
+        for alert in auto_alerts:
+            logger.info("Autonomous alert: %s", alert.summary)
+            await self._notify(
+                NotificationCategory.AUTONOMOUS_MODE,
+                f"[{alert.severity.value.upper()}] {alert.ticker}",
+                alert.summary,
+            )
+
+    async def _handle_agent_results(self, agent_results: list) -> None:
+        for ar in agent_results:
+            if ar.ok:
+                logger.info("Agent ran: %s [%s]", ar.name, ar.model)
+            else:
+                logger.warning("Agent failed: %s — %s", ar.name, ar.error)
+
+    async def _handle_briefing_result(self, sent: str | None) -> None:
+        if sent:
+            logger.info("Daily briefing pushed")
 
     async def _handle_bot_command(self, command: BotCommand) -> None:
         """Dispatch an incoming bot command and reply with the result."""
@@ -157,49 +165,11 @@ class Server:
             await self._telegram_poller.send_reply(reply)
 
     def _dispatch_bot_command(self, command: BotCommand) -> str:
-        """Route a :class:`BotCommand` to the matching handler.
+        """Route a bot command to a reply (delegates to the BotCommandHandler)."""
+        return self._bot.dispatch(command)
 
-        Handlers return the reply text to send back to the user. Long
-        replies are truncated by the poller before transmission.
-        """
-        action = command.action
-        if action in {"help", "start"}:
-            return self._cmd_help()
-        if action == "status":
-            return self._cmd_status()
-        if action == "alerts":
-            return self._cmd_alerts()
-        if action == "alert":
-            return self._cmd_create_alert(command.args)
-        if action == "tasks":
-            return self._cmd_tasks()
-        if action == "schedule":
-            return self._cmd_schedule(command.args)
-        if action in {"analyze", "portfolio"}:
-            return (
-                f"/{action} is not supported in bot mode yet — "
-                "use the qracer CLI on the host. Try /help."
-            )
-        return f"Unknown command: /{action}. Try /help."
-
-    # ------------------------------------------------------------------
-    # Individual command handlers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _cmd_help() -> str:
-        return (
-            "qracer bot commands:\n"
-            "/status — server status and uptime\n"
-            "/alerts — list active price alerts\n"
-            "/alert TICKER above|below PRICE — create a price alert\n"
-            "/tasks — list scheduled tasks\n"
-            "/schedule ACTION TICKER SCHEDULE — schedule a task\n"
-            "    e.g. /schedule analyze AAPL every 1h\n"
-            "/help — show this message"
-        )
-
-    def _cmd_status(self) -> str:
+    def _status_text(self) -> str:
+        """The ``/status`` reply — server state the bot handler can't see itself."""
         uptime = "unknown"
         if self._started_at is not None:
             uptime = _format_duration(time.monotonic() - self._started_at)
@@ -211,62 +181,6 @@ class Server:
             f"  notifications: {channels}\n"
             f"  autonomous: {autonomous}"
         )
-
-    def _cmd_alerts(self) -> str:
-        alerts = self._alert_monitor.store.get_active()
-        if not alerts:
-            return "No active alerts."
-        lines = ["Active alerts:"]
-        for a in alerts:
-            lines.append(f"  {a.id}  {a.describe()}")
-        return "\n".join(lines)
-
-    def _cmd_create_alert(self, args: list[str]) -> str:
-        if len(args) < 3:
-            return "Usage: /alert TICKER above|below PRICE  (e.g. /alert AAPL above 200)"
-        ticker, condition_str, price_str = args[0], args[1].lower(), args[2]
-        try:
-            condition = AlertCondition(condition_str)
-        except ValueError:
-            return f"Unknown condition '{condition_str}'. Use 'above' or 'below'."
-        if condition is AlertCondition.CHANGE_PCT:
-            return "Use 'above' or 'below' from the bot — change_pct alerts need the CLI."
-        try:
-            threshold = float(price_str)
-        except ValueError:
-            return f"Invalid price '{price_str}' — must be a number."
-        alert = self._alert_monitor.store.create(ticker, condition, threshold)
-        return f"Created alert {alert.id}: {alert.describe()}"
-
-    def _cmd_tasks(self) -> str:
-        tasks = self._task_executor.store.get_active()
-        if not tasks:
-            return "No scheduled tasks."
-        lines = ["Scheduled tasks:"]
-        for t in tasks:
-            lines.append(f"  {t.id}  {t.describe()}")
-        return "\n".join(lines)
-
-    def _cmd_schedule(self, args: list[str]) -> str:
-        if len(args) < 3:
-            return (
-                "Usage: /schedule ACTION TICKER SCHEDULE\n"
-                "  ACTION: analyze | news_scan | portfolio_snapshot\n"
-                "  e.g. /schedule analyze AAPL every 1h"
-            )
-        action_str = args[0].lower()
-        ticker = args[1].upper()
-        schedule_spec = " ".join(args[2:])
-        try:
-            action_type = TaskActionType(action_str)
-        except ValueError:
-            valid = ", ".join(t.value for t in TaskActionType)
-            return f"Unknown action '{action_str}'. Valid: {valid}"
-        try:
-            task = self._task_executor.store.create(action_type, {"ticker": ticker}, schedule_spec)
-        except ValueError as exc:
-            return f"Invalid schedule: {exc}"
-        return f"Scheduled task {task.id}: {task.describe()}"
 
     async def _notify(self, category: NotificationCategory, title: str, body: str) -> None:
         """Send a notification if any channels are registered."""
