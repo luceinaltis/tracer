@@ -7,54 +7,30 @@ Per-role assignment is overridable via config.
 from __future__ import annotations
 
 from qracer.llm.providers import LLMProvider, Role
+from qracer.registry_base import KeyedRegistry
 
 
-class LLMRegistry:
+class LLMRegistry(KeyedRegistry[Role, LLMProvider]):
     """Routes LLM requests by role with ordered fallback."""
 
-    def __init__(self) -> None:
-        # role -> list of (name, provider) in priority order
-        self._providers: dict[Role, list[tuple[str, LLMProvider]]] = {}
+    _item_noun = "provider"
+    _key_noun = "role"
+
+    def _key_label(self, key: Role) -> str:
+        return key.value
 
     def register(self, name: str, provider: LLMProvider, roles: list[Role]) -> None:
-        """Register a provider for the given roles.
-
-        Providers registered first for a given role have higher priority.
-        """
-        for role in roles:
-            if role not in self._providers:
-                self._providers[role] = []
-            self._providers[role].append((name, provider))
+        """Register a provider for the given roles (earlier = higher priority)."""
+        self._register(name, provider, roles)
 
     def get(self, role: Role, name: str | None = None) -> LLMProvider:
-        """Get a provider by role, optionally by explicit name.
-
-        Args:
-            role: The role to look up.
-            name: If provided, return the provider with this name specifically.
-
-        Returns:
-            The provider instance.
-
-        Raises:
-            KeyError: If no provider is registered for the role (or name).
-        """
-        providers = self._providers.get(role)
-        if not providers:
-            raise KeyError(f"No provider registered for role {role.value}")
-
-        if name is not None:
-            for provider_name, provider in providers:
-                if provider_name == name:
-                    return provider
-            raise KeyError(f"No provider named '{name}' for role {role.value}")
-
-        return providers[0][1]
+        """Get a provider by role, optionally by explicit name. Raises KeyError."""
+        return self._get(role, name)
 
     def get_all(self, role: Role) -> list[tuple[str, LLMProvider]]:
         """Get all providers for a role in priority order."""
-        return list(self._providers.get(role, []))
+        return self._get_all(role)
 
     def roles(self) -> list[Role]:
         """List all registered roles."""
-        return list(self._providers.keys())
+        return self._keys()
