@@ -60,3 +60,4 @@ Thumbs.db
 # AI assistants
 .claude/
 .codex/
+.playwright-mcp/

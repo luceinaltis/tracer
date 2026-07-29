@@ -6,12 +6,16 @@ Natural language queries → cross-market analysis → actionable alpha reports 
 
 ## Features
 
-- **Dual-mode pipeline** — QuickPath (< 5s) for market-hours queries, DeepPath (9-step) for full research
-- **Multi-provider data** — yfinance (built-in), Finnhub, FRED, FMP via plugin system
-- **LLM agent pipeline** — Researcher → Analyst → Strategist → Reporter, each with a dedicated role
-- **Portfolio-aware risk** — position sizing by conviction, sector limits, drawdown alerts
-- **Session memory** — 3-tier architecture (JSONL audit → compressed summaries → DuckDB search index)
-- **Multi-ticker comparison** — side-by-side analysis with comparative verdict
+- **Conversational pipeline** — intent → handler → tools → LLM synthesis, with
+  quick lookups, deep analysis, multi-ticker comparison, and portfolio checks
+- **Capability-routed data** — yfinance (price), Finnhub (fundamentals/news/insider),
+  FRED (macro), DART (Korean company financials/disclosures, by 6-digit KRX code);
+  pluggable via a capability registry + entry points
+- **Role-based LLM routing** — Researcher / Analyst / Strategist / Reporter roles
+- **Portfolio-aware risk** — position sizing by conviction, sector/correlation limits, rebalance
+- **Session memory** — 3-tier (JSONL audit → compressed summaries → DuckDB search index)
+- **Autonomous `serve`** — scheduled tasks, price alerts, market-hours monitor, and
+  prompt-defined custom agents
 
 ## Quick Start
 
@@ -26,6 +30,20 @@ qracer install
 qracer repl
 ```
 
+### Configuration
+
+Settings live in `~/.qracer/` and can be edited from the terminal or the web dashboard —
+both share one schema and a comment-preserving writer, so nothing hand-edited is lost:
+
+```bash
+qracer config                       # list all settings, grouped, with current values
+qracer config set briefing.schedule "0 9 * * *"
+qracer config providers             # enable/disable providers and set API keys, interactively
+```
+
+Or open the web dashboard's **Settings** tab (`qracer web`, localhost only) to toggle
+providers, enter API keys (masked), and change app/briefing/portfolio settings from a form.
+
 ## Architecture
 
 ```text
@@ -33,37 +51,35 @@ CLI (REPL)
     ↓
 ConversationEngine
     ↓
-IntentParser ──→ LivePipeline (< 5s)    ← QuickPath
-    │               or
-    └──────────→ ResearchPipeline        ← DeepPath
-                    │
-                    ├─ 1. Universe Screening     (Researcher)
-                    ├─ 2. Macro Regime Detection  (Analyst)
-                    ├─ 3. Cross-Market Discovery  (Analyst)
-                    ├─ 4. Consensus Mapping       (Researcher)
-                    ├─ 5. Contrarian Detection    (Strategist)
-                    ├─ 6. Conviction Scoring      (Strategist)
-                    ├─ 7. Trade Thesis Generation (Strategist)
-                    ├─ 8. Risk Check              (Strategist)
-                    └─ 9. Alpha Report            (Reporter)
+IntentParser → handler
+    ├─ QuickPathHandler    — template lookup (no LLM)
+    ├─ ComparisonHandler   — per-ticker fan-out + table
+    ├─ PortfolioHandler    — snapshot + limit check
+    └─ StandardHandler     — deep path:
+           invoke_tools → AnalysisLoop → trade_thesis → risk_check → ResponseSynthesizer
 ```
 
-Data providers and LLM providers register capabilities via a **Registry pattern** — agents request by capability, not by source.
+Data and LLM providers register capabilities/roles via a **Registry pattern** — tools
+request by capability, not by source. See [docs/architecture.md](docs/architecture.md).
 
 ## Project Structure
 
 ```text
 qracer/
-├── agents/        # LLM agent roles (researcher, analyst, strategist, reporter)
-├── config/        # .qracer/ config loading and models
-├── conversation/  # Intent parsing, context tracking, engine orchestration
-├── data/          # Data provider protocols and adapters (yfinance, etc.)
-├── llm/           # LLM provider protocols and adapters (Claude, etc.)
-├── memory/        # Session logging, compaction, search
-├── models/        # Domain models (Signal, Report, TradeThesis, ToolResult)
-├── risk/          # Portfolio risk calculator, position sizing
-├── storage/       # DuckDB persistence layer
-└── tools/         # Pipeline tool wrappers
+├── conversation/   # Intent parsing, context, engine, handlers, analysis loop, synthesizer
+├── data/           # Capability protocols + adapters (yfinance, Finnhub, FRED, DART) + registry
+├── llm/            # LLM role routing + adapters (Claude, OpenAI, Gemini, OpenRouter)
+├── risk/           # Portfolio risk calculator, position sizing, correlation
+├── memory/         # Session logging, compaction, search, fact store
+├── tools/          # Pipeline tool wrappers (ToolResult)
+├── config/         # .qracer/ config loading and pydantic models
+├── notifications/  # Telegram send + inbound poller
+├── web/            # FastAPI API + NiceGUI dashboard (status + editable Agents/Settings)
+├── models/         # Domain models (ToolResult, TradeThesis)
+├── agents/         # Legacy role classes (not wired into the live pipeline)
+├── server.py       # `qracer serve` daemon loop
+├── task_executor.py, tasks.py, alerts.py, autonomous.py  # scheduled tasks / alerts / monitor
+└── agents_store.py, agent_runner.py, agent_monitor.py    # custom autonomous agents
 ```
 
 ## Configuration
@@ -103,17 +119,19 @@ uv run pytest --cov=qracer --cov-report=term-missing --cov-fail-under=80
 | Lint / Format | ruff |
 | Type checker | pyright |
 | Test | pytest + pytest-asyncio |
-| LLM | Multi-provider (Claude, OpenAI, Gemini) |
-| Data | Multi-source (yfinance, Finnhub, FRED, FMP) |
-| Storage | DuckDB (single-file, append-only) |
+| LLM | Multi-provider (Claude, OpenAI, Gemini, OpenRouter) |
+| Data | Multi-source (yfinance, Finnhub, FRED, DART) |
+| Storage | DuckDB + file-backed JSON stores |
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](docs/architecture.md) | Dual-mode design, provider plugin system, storage |
-| [Pipeline](docs/pipeline.md) | 9-step research pipeline and live pipeline |
-| [Conversational Layer](docs/conversational-layer.md) | Intent routing, context management, response formats |
+| [Architecture](docs/architecture.md) | Layer map, capability registry, config/storage, roadmap |
+| [Pipeline](docs/pipeline.md) | Query → handler → tools → thesis → synthesis |
+| [Conversational Layer](docs/conversational-layer.md) | Intent, context, roles, response formats |
 | [Risk System](docs/risk-system.md) | Portfolio model, position sizing, exposure limits |
 | [Memory System](docs/memory-system.md) | 3-tier session memory architecture |
-| [User Experience](docs/user-experience.md) | Natural language interface, dashboard design |
+| [Custom Agents](docs/custom-agents.md) | Prompt-defined autonomous agents (cron/continuous) |
+| [Serve](docs/serve.md) | Background daemon: tasks, alerts, monitors |
+| [Schedule](docs/schedule.md) | Task scheduler |

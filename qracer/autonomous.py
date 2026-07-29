@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from qracer.data.providers import NewsProvider, PriceProvider
 from qracer.data.registry import DataRegistry
+from qracer.monitors.base import PollingMonitor
 from qracer.watchlist import Watchlist
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ def _severity_for_pct(pct: float) -> Severity:
     return Severity.INFO
 
 
-class AutonomousMonitor:
+class AutonomousMonitor(PollingMonitor):
     """Monitors watchlist tickers for price moves and breaking news.
 
     Follows the same ``should_check()`` / ``check()`` polling pattern
@@ -99,12 +100,11 @@ class AutonomousMonitor:
         price_threshold_pct: float = DEFAULT_PRICE_THRESHOLD_PCT,
         cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES,
     ) -> None:
+        super().__init__(check_interval)
         self._watchlist = watchlist
         self._data = data_registry
-        self._check_interval = check_interval
         self._price_threshold_pct = price_threshold_pct
         self._cooldown_seconds = cooldown_minutes * 60
-        self._last_check: float | None = None
         # ticker → monotonic timestamp of last alert
         self._cooldowns: dict[str, float] = {}
         # ticker → last known price (for change detection)
@@ -114,13 +114,11 @@ class AutonomousMonitor:
         """Return True when a check is due and the market is open."""
         if not is_market_hours():
             return False
-        if self._last_check is None:
-            return True
-        return (time.monotonic() - self._last_check) >= self._check_interval
+        return super().should_check()
 
     async def check(self) -> list[AutonomousAlert]:
         """Scan watchlist tickers and return any triggered alerts."""
-        self._last_check = time.monotonic()
+        self._mark_checked()
         tickers = self._watchlist.tickers
         if not tickers:
             return []

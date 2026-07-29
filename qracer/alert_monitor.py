@@ -7,11 +7,11 @@ PriceProvider capability. Designed to be called from the REPL heartbeat.
 from __future__ import annotations
 
 import logging
-import time
 
 from qracer.alerts import AlertResult, AlertStore
 from qracer.data.providers import PriceProvider
 from qracer.data.registry import DataRegistry
+from qracer.monitors.base import PollingMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CHECK_INTERVAL = 5
 
 
-class AlertMonitor:
+class AlertMonitor(PollingMonitor):
     """Monitors active alerts and triggers them when conditions are met.
 
     Usage::
@@ -36,27 +36,20 @@ class AlertMonitor:
         data_registry: DataRegistry,
         check_interval: float = DEFAULT_CHECK_INTERVAL,
     ) -> None:
+        super().__init__(check_interval)
         self._store = store
         self._data_registry = data_registry
-        self._check_interval = check_interval
-        self._last_check: float | None = None
 
     @property
     def store(self) -> AlertStore:
         return self._store
-
-    def should_check(self) -> bool:
-        """Return True if enough time has elapsed since the last check."""
-        if self._last_check is None:
-            return True
-        return (time.monotonic() - self._last_check) >= self._check_interval
 
     async def check(self) -> list[AlertResult]:
         """Evaluate all active alerts and return any that triggered.
 
         Triggered alerts are automatically marked inactive in the store.
         """
-        self._last_check = time.monotonic()
+        self._mark_checked()
         active = self._store.get_active()
         if not active:
             return []

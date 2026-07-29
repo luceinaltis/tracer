@@ -12,6 +12,8 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import DataTable, Label, Static
 
 from qracer.config.loader import _user_dir, load_config
+from qracer.data.prices import fetch_prices as _fetch_prices
+from qracer.presenters import watchlist_rows
 from qracer.watchlist import Watchlist
 
 if TYPE_CHECKING:
@@ -33,28 +35,8 @@ def _format_change(change: float) -> str:
     return f"{sign}{change:.2f}%"
 
 
-async def _fetch_prices(data_registry: DataRegistry | None, tickers: list[str]) -> dict[str, float]:
-    """Fetch prices for *tickers* via ``PriceProvider`` fallback.
-
-    Returns an empty dict if no registry is provided.  Failures for
-    individual tickers are logged and skipped so that one bad symbol
-    does not blank the whole table.
-    """
-    if data_registry is None or not tickers:
-        return {}
-
-    from qracer.data.providers import PriceProvider
-
-    prices: dict[str, float] = {}
-    for ticker in tickers:
-        try:
-            price = await data_registry.async_get_with_fallback(PriceProvider, "get_price", ticker)
-        except Exception as exc:  # noqa: BLE001 — log and continue
-            logger.debug("Price fetch failed for %s: %s", ticker, exc)
-            continue
-        if isinstance(price, (int, float)):
-            prices[ticker] = float(price)
-    return prices
+# Price fetching is the shared best-effort helper (qracer.data.prices.fetch_prices),
+# imported above as _fetch_prices so the call sites below are unchanged.
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +130,8 @@ class OverviewPanel(VerticalScroll):
         if not wl.tickers:
             table.add_row("—", "—")
             return
-        for ticker in wl.tickers:
-            price = self._prices.get(ticker)
-            price_str = f"${price:,.2f}" if price is not None else "—"
-            table.add_row(ticker, price_str)
+        for row in watchlist_rows(list(wl.tickers), self._prices):
+            table.add_row(row["ticker"], row["price"])
 
     async def refresh_data(self) -> None:
         """Fetch live prices and rebuild the tables."""
@@ -288,10 +268,8 @@ class WatchlistPanel(VerticalScroll):
             hint.update("Watchlist is empty. Use 'qracer repl' → 'watch TICKER' to add.")
             return
         hint.update("")
-        for ticker in wl.tickers:
-            price = self._prices.get(ticker)
-            price_str = f"${price:,.2f}" if price is not None else "—"
-            table.add_row(ticker, price_str)
+        for row in watchlist_rows(list(wl.tickers), self._prices):
+            table.add_row(row["ticker"], row["price"])
 
     async def refresh_data(self) -> None:
         """Fetch live prices for watchlist tickers and rebuild the table."""
@@ -522,7 +500,7 @@ class HistoryPanel(VerticalScroll):
             sid = f.stem
             mtime = f.stat().st_mtime
             dt = datetime.datetime.fromtimestamp(mtime)
-            line_count = sum(1 for _ in f.open())
+            line_count = sum(1 for _ in f.open(encoding="utf-8"))
             table.add_row(sid, dt.strftime("%Y-%m-%d %H:%M"), str(line_count))
 
 

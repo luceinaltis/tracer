@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from qracer.agents_store import AgentStore
 from qracer.alerts import AlertStore
 from qracer.config.loader import _user_dir
+from qracer.memory.fact_store import FactStore
 from qracer.tasks import TaskStore
 from qracer.watchlist import Watchlist
 from qracer.web.routes import router as api_router
@@ -37,9 +40,21 @@ def create_app(user_dir: Path | None = None) -> "FastAPI":
             "qracer.web requires FastAPI. Install with: pip install 'qracer[web]'"
         ) from exc
 
+    from contextlib import asynccontextmanager
+
     base_dir = user_dir if user_dir is not None else _user_dir()
 
-    app = FastAPI(title="qracer", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: "FastAPI"):
+        yield
+        # FactStore holds an open DuckDB connection; close it on shutdown so the file
+        # handle is released (important on Windows and for test temp-dir cleanup).
+        try:
+            app.state.fact_store.close()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+
+    app = FastAPI(title="qracer", version="0.1.0", lifespan=lifespan)
 
     # Shared, file-backed stores. Each store hot-reloads on mtime change so
     # mutations made by `qracer repl` or `qracer serve` are picked up.
@@ -47,6 +62,31 @@ def create_app(user_dir: Path | None = None) -> "FastAPI":
     app.state.task_store = TaskStore(base_dir / "tasks.json")
     app.state.alert_store = AlertStore(base_dir / "alerts.json")
     app.state.watchlist = Watchlist(base_dir / "watchlist.json")
+    app.state.agent_store = AgentStore(base_dir / "agents.json")
+    app.state.fact_store = FactStore(base_dir / "fact_store.duckdb")
+
+    # Registries give the web layer live-price + LLM access (for the dashboard and
+    # briefing). Failure must not break the JSON API, so degrade to None + warn.
+    try:
+        from qracer.bootstrap import build_registries
+
+        llm_registry, data_registry, _warnings = build_registries()
+    except Exception:  # pragma: no cover - defensive: API stays up without registries
+        logging.getLogger(__name__).warning("Failed to build registries", exc_info=True)
+        llm_registry, data_registry = None, None
+    app.state.llm_registry = llm_registry
+    app.state.data_registry = data_registry
 
     app.include_router(api_router, prefix="/api")
+
+    # Mount the NiceGUI dashboard at "/" (optional dependency).
+    try:
+        from qracer.web.dashboard import mount as mount_dashboard
+
+        mount_dashboard(app, base_dir, data_registry, llm_registry, app.state.fact_store)
+    except ImportError:
+        pass  # nicegui not installed — API still works, no UI
+    except Exception:  # pragma: no cover - never let the UI break the API
+        logging.getLogger(__name__).warning("Failed to mount dashboard", exc_info=True)
+
     return app

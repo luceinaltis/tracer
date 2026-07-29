@@ -33,9 +33,15 @@ The agent calls `memory_search` autonomously when past context may be relevant.
 
 On `qracer repl` startup, the CLI instantiates a file-backed `MemorySearcher` at `~/.qracer/memory_index.duckdb` and re-indexes every Markdown file in `~/.qracer/summaries/`. The number of loaded contexts is printed to the user so returning sessions immediately know how much prior memory is in scope.
 
-## MEMORY.md vs. Tier 2
+## Structured cross-session facts (FactStore)
 
-> **구현 예정** — MEMORY.md, BOOTSTRAP.md 기반 크로스 세션 메모리는 아직 구현되지 않았습니다.
+Beyond the three memory tiers (which are conversational), durable investment facts
+live in `FactStore` (`memory/fact_store.py`, DuckDB at `~/.qracer/fact_store.duckdb`).
+It persists **theses**: `save_thesis` records a trade thesis and auto-supersedes a
+prior open thesis on the same ticker; `get_open_theses` re-injects them as prior
+evidence in the deep path (see [pipeline.md](pipeline.md)).
 
-- **Tier 2**: auto-generated, per-session. Temporary working memory.
-- **MEMORY.md**: cross-session long-term memory. Manually curated or auto-aggregated. Contains active theses and strong multi-session signals. Loaded at session start via `BOOTSTRAP.md`.
+Today theses are only ever created and superseded — there is no outcome tracking
+(`update_thesis_status` is unused in production). A thesis lifecycle
+(hit/stopped/invalidated) and a hit-rate feedback loop are on the roadmap in
+[architecture.md](architecture.md).

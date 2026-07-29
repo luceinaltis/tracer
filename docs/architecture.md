@@ -1,81 +1,100 @@
 # Architecture
 
-## Dual-Mode Design
+qracer is a conversational, CLI-first investment-research tool. Natural-language
+queries are parsed into intents, routed to a handler, grounded with data fetched
+through a capability registry, and synthesized into a response by an LLM.
 
-qracer operates in two modes based on context:
+This document describes what the code **actually does today**. For where the design
+is heading (a grounded, source-cited "investor harness"), see the roadmap note at
+the end.
 
-| | Live Mode | Research Mode |
-|---|---|---|
-| **When** | Market hours, quick queries | On-demand, explicit request |
-| **Latency** | < 5 seconds | 30–120 seconds |
-| **LLM calls** | 0–1 | 3–7 |
-| **Data** | Real-time quotes, cached fundamentals | Full fetch across all providers |
-| **Output** | Short answer, table, or alert | Full analysis report with evidence chain |
-
-Mode is selected automatically by the IntentRouter based on query complexity, but can be forced by the user (`/deep`, `/quick`).
-
-## QuickPath vs DeepPath
+## Layers
 
 ```text
-QuickPath (Live Mode)
-  User query → IntentRouter → 1-2 data tools → format response
-  Target: < 5s end-to-end
-
-DeepPath (Research Mode)
-  User query → IntentRouter → ResearchPipeline (9-step) → full report
-  Target: async, notify on completion
+CLI (qracer/cli.py)
+    │  commands: install · repl · run · serve · web · dashboard · models · status
+    ▼
+ConversationEngine (conversation/engine.py)
+    │  intent parsing · context · routing · fact persistence · compaction
+    ▼
+Handlers (conversation/handlers.py)
+    │  PortfolioHandler · QuickPathHandler · ComparisonHandler · StandardHandler
+    ▼
+Dispatcher + Tools (conversation/dispatcher.py, tools/pipeline.py)
+    │  price_event · news · insider · macro · fundamentals · cross_market
+    │  trade_thesis · risk_check · memory_search
+    ▼
+Registries
+    ├── DataRegistry  (data/registry.py)  — capability routing + fallback
+    └── LLMRegistry   (llm/registry.py)   — role routing
 ```
 
-QuickPath handles ~80% of market-hours queries: price checks, news summaries, quick comparisons, follow-ups. DeepPath is triggered explicitly or when the query requires cross-market analysis.
+The composition root is `_build_registries()` (`cli.py`): it reads config, discovers
+providers from `provider_catalog.py`, resolves API keys, and registers each enabled
+adapter into the two registries. `repl()` wires the engine and supporting subsystems
+by hand.
 
-## Adapter + Capability Registry Pattern
+## Capability Registry Pattern
 
-Adapters register capabilities, registry routes requests by capability. Agents never reference a specific source directly.
+Adapters implement capability **protocols**; the registry routes by capability, so
+tools never reference a specific source. `DataRegistry` supports ordered fallback
+(`async_get_with_fallback`) — register two adapters for the same capability and the
+second is tried when the first fails.
 
 ```python
-class FinnhubAdapter:
-    capabilities = [Price, News, Insider, Congress]
-
+# data/providers.py — capability protocols
+class PriceProvider(Protocol):
     async def get_price(self, ticker: str) -> float: ...
-    async def get_news(self, ticker: str) -> list[News]: ...
+    async def get_ohlcv(self, ticker, start, end) -> list[OHLCV]: ...
 
-# Agents request by capability, not by source
-registry.get(Price)          # → FinnhubAdapter (primary)
-registry.get(Price, "yf")    # → YfinanceAdapter (explicit)
+# tools request by capability, not by source
+registry.get(PriceProvider)          # highest-priority adapter
 ```
 
-### Latency Constraints
+Current capabilities: `PriceProvider`, `FundamentalProvider`, `MacroProvider`,
+`NewsProvider`, `AlternativeProvider` (insider). Wired adapters:
 
-Adapters used in QuickPath must meet latency requirements:
+| Capability | Adapter | Notes |
+|---|---|---|
+| Price / OHLCV | yfinance (`data/yfinance_adapter.py`) | unofficial; IP-block prone |
+| Fundamentals / News / Insider | Finnhub (`data/finnhub_adapter.py`) | US market; news sentiment not populated |
+| Macro | FRED (`data/fred_adapter.py`) | 6 named series + raw series id |
+| Fundamentals / Disclosures / Insider | DART (`data/dart_adapter.py`) | Korea (OpenDART); ticker = 6-digit KRX code (e.g. `005930`) |
 
-| Tier | Max Latency | Used In | Examples |
-|------|-------------|---------|----------|
-| **hot** | < 2s | QuickPath | Price, cached News |
-| **warm** | < 10s | Either | Fundamentals, Macro |
-| **cold** | unbounded | DeepPath only | Full backfill, alternative data |
+DART and Finnhub both serve the fundamentals/news/insider capabilities: DART is
+higher priority but fails fast on non-6-digit tickers, so Korean codes route to DART
+and everything else falls through to Finnhub. This is the fallback machinery in
+actual use. Adding a source = a capability adapter + one entry in
+`provider_catalog.py` **or** an external package on the `qracer.data_providers`
+entry-point group.
 
-Registry tags each adapter with its tier. QuickPath only dispatches to hot/warm adapters. If a hot adapter times out, the response includes a staleness caveat rather than blocking.
+## Configuration (`.qracer/`)
 
-## Config Directory (`.qracer/`)
-
-User and project settings live in a `.qracer/` directory. Resolution order (first found wins):
-
-1. `--config-dir` CLI flag
-2. `QRACER_CONFIG_DIR` environment variable
-3. `./.qracer/` — project-local, team-shareable via git
-4. `~/.qracer/` — user default
-
-Project-local and user configs merge per file: `./.qracer/providers.toml` defines shared provider list, `~/.qracer/credentials.env` supplies personal API keys. Credentials always stay user-level, never committed.
+Config resolves in order (first found wins): `QRACER_CONFIG_DIR` → `./.qracer/` →
+`~/.qracer/`. Files are deep-merged per file; credentials stay user-level.
 
 ```text
 .qracer/
-├── config.toml        - global settings (default mode, LLM preferences)
-├── providers.toml     - data source config (enabled, priority, tier, api_key_env)
-├── portfolio.toml     - watchlist, holdings, risk limits
-└── credentials.env    - API keys (user-level only, gitignored)
+├── config.toml       — app settings (default_mode, llm_provider, loop tuning)
+├── providers.toml    — data/LLM provider config (enabled, priority, tier, api_key_env, kind)
+├── portfolio.toml    — holdings + risk limits
+└── credentials.env   — API keys (user-level, gitignored)
 ```
 
-## Provider Plugin System
+Loader: `config/loader.py` (lazy singleton, mtime hot-reload). Models:
+`config/models.py` (pydantic).
+
+**Editing config** is schema-driven, so both front-ends stay in sync:
+- `config/settings_schema.py` declares each editable setting once (`Setting` + the
+  provider rows from `provider_settings()`). Add a setting here and it appears in
+  both the CLI and the web form.
+- `config/writer.py` is the single write path — `tomlkit` round-trip edits that
+  preserve comments, formatting, and nested tables (`[briefing]`, `[providers.*]`,
+  `[limits]`), plus a `credentials.env` upsert. Writes target `QRACER_CONFIG_DIR`
+  if set, else `~/.qracer/`.
+- Front-ends: `qracer config` (`get`/`set`/`providers` + a grouped listing) and the
+  web dashboard **Settings** tab (`web/settings_ui.py`). API keys are masked and
+  write-only. `qracer install` builds on the same writer.
 
 Built-in adapters and external plugins share the same capability protocols
 (`PriceProvider`, `NewsProvider`, …) and are registered from the same
@@ -247,11 +266,49 @@ DuckDB (qracer.db)
 
 Also serves as API cache to reduce rate limit pressure. Export to Parquet for backup/sharing.
 
-## Rate Limits
+## Storage & State
 
-| Source | Free Tier Limit | Notes |
+| Path | Backing | Written by |
 |---|---|---|
-| Finnhub | 60 req/min | WebSocket preferred for real-time |
-| yfinance | ~2000 req/hr (est) | Historical backfill only, avoid real-time |
-| FRED | 120 req/min | Generous |
-| FMP | 250 req/day | Low; fallback only |
+| `~/.qracer/sessions/<id>.jsonl` | JSONL audit log | SessionLogger |
+| `~/.qracer/summaries/<id>.md` | compacted summaries | SessionCompactor |
+| `~/.qracer/memory_index.duckdb` | FTS + optional embeddings | MemorySearcher |
+| `~/.qracer/fact_store.duckdb` | persisted theses | FactStore |
+| `~/.qracer/{tasks,alerts,watchlist,agents}.json` | file stores | serve / repl / web |
+
+See [memory-system.md](memory-system.md) for the session-memory tiers.
+
+## Subsystems
+
+| Area | Modules | Purpose |
+|---|---|---|
+| Conversation | `conversation/` | intent → handler → tools → synthesizer |
+| Data | `data/` | capability protocols + adapters + registry |
+| LLM | `llm/` | role routing + provider adapters (Claude/OpenAI/Gemini/OpenRouter) |
+| Risk | `risk/` | position sizing, exposure, correlation, rebalance ([risk-system.md](risk-system.md)) |
+| Memory | `memory/` | session logging, compaction, search, fact store |
+| Tools | `tools/pipeline.py` | uniform `ToolResult`-returning tool wrappers |
+| Daemon | `server.py`, `task_executor.py`, `alert_monitor.py`, `autonomous.py` | `qracer serve` ([serve.md](serve.md), [schedule.md](schedule.md)) |
+| Custom agents | `agents_store.py`, `agent_runner.py`, `agent_monitor.py` | prompt-defined autonomous agents ([custom-agents.md](custom-agents.md)) |
+| Web | `web/` | FastAPI API + NiceGUI dashboard (read-only status + editable Agents & Settings) |
+| Notifications | `notifications/` | Telegram send + inbound poller |
+
+## Roadmap — grounded investor harness
+
+The plumbing above (protocol + registry + catalog seams, the risk math, the fact
+store) is solid; the content layer is thin. The intended direction:
+
+- **Investor profile + real position sizing** — a profile (risk tolerance, cash,
+  goals, constraints) driving sizing unconditionally, not just when holdings exist.
+- **Grounded, source-cited recommendations** — replace free-form LLM theses with a
+  schema-enforced `Recommendation` (explicit action, sizing, entry/target/stop, each
+  claim cited to a `ToolResult`) plus a verification step that reconciles the numbers
+  against fetched data.
+- **Pluggable data breadth** — new capabilities (events/earnings, estimates,
+  benchmark, real sentiment, options) behind the existing registry seam, with 2+
+  adapters per capability so fallback is real.
+- **Feedback loop** — thesis lifecycle (hit/stopped/invalidated) tracked to build a
+  hit-rate that tempers conviction.
+- **Intentional role→model routing** — today the role is not passed into
+  `complete()`, so per-role model tiering never engages; this needs fixing or
+  collapsing.

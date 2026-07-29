@@ -44,19 +44,26 @@ class TestInstall:
         assert (home_dir / "credentials.env").exists()
         assert "Setup complete" in result.output
 
-    def test_install_skips_existing_files(self, tmp_path: Path) -> None:
+    def test_install_keeps_existing_files_but_applies_choice(self, tmp_path: Path) -> None:
+        # A pre-existing, valid config with a custom marker. Re-running install must
+        # keep the file (and the marker/comment) but surgically apply the new choice.
         home_dir = tmp_path / ".qracer"
         home_dir.mkdir()
-        (home_dir / "config.toml").write_text("existing")
+        (home_dir / "config.toml").write_text(
+            '# my custom note\ndefault_mode = "deep"\nllm_provider = "openai"\n',
+            encoding="utf-8",
+        )
 
         runner = CliRunner()
         with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["install"], input="1\n\nUSD\n")
+            result = runner.invoke(main, ["install"], input="1\n\nUSD\n")  # choice 1 = claude
 
         assert result.exit_code == 0
         assert "already exists" in result.output
-        # Existing file should not be overwritten
-        assert (home_dir / "config.toml").read_text() == "existing"
+        content = (home_dir / "config.toml").read_text(encoding="utf-8")
+        assert "# my custom note" in content  # comment preserved
+        assert 'default_mode = "deep"' in content  # untouched key preserved
+        assert 'llm_provider = "claude"' in content  # wizard choice applied via surgical upsert
 
     def test_install_writes_credentials(self, tmp_path: Path) -> None:
         home_dir = tmp_path / ".qracer"
@@ -104,6 +111,44 @@ class TestInstall:
         assert data["providers"]["openai"]["enabled"] is True
         assert data["providers"]["claude"]["enabled"] is False
 
+    def test_install_selects_openrouter_with_model(self, tmp_path: Path) -> None:
+        home_dir = tmp_path / ".qracer"
+        runner = CliRunner()
+
+        from qracer.llm.openrouter_adapter import ModelInfo
+
+        fake_models = [
+            ModelInfo(
+                id="anthropic/claude-3.5-sonnet",
+                name="Claude 3.5 Sonnet",
+                context_length=200000,
+                prompt_price=3e-6,
+                completion_price=1.5e-5,
+            )
+        ]
+
+        with (
+            patch("qracer.cli._user_dir", return_value=home_dir),
+            patch("qracer.llm.openrouter_adapter.list_models", return_value=fake_models),
+        ):
+            # Choice=4 (OpenRouter), API key, search 'claude', pick #1, currency USD
+            result = runner.invoke(main, ["install"], input="4\nsk-or-key\nclaude\n1\nUSD\n")
+
+        assert result.exit_code == 0, result.output
+        creds = (home_dir / "credentials.env").read_text()
+        assert "OPENROUTER_API_KEY=sk-or-key" in creds
+
+        import tomllib
+
+        with open(home_dir / "providers.toml", "rb") as f:
+            prov = tomllib.load(f)
+        assert prov["providers"]["openrouter"]["enabled"] is True
+
+        with open(home_dir / "config.toml", "rb") as f:
+            cfg = tomllib.load(f)
+        assert cfg["llm_provider"] == "openrouter"
+        assert cfg["llm_model"] == "anthropic/claude-3.5-sonnet"
+
 
 class TestStatus:
     def test_status_no_config(self) -> None:
@@ -147,48 +192,63 @@ class TestStatus:
 
 
 class TestConfig:
-    def test_config_show(self) -> None:
-        runner = CliRunner()
-        with patch("qracer.cli.load_config") as mock_load:
-            from qracer.config.models import QracerConfig
+    """The `config` command is isolated via the shared ``config_dir`` fixture, which
+    sets QRACER_CONFIG_DIR (honored by both the loader and the writer)."""
 
-            mock_load.return_value = QracerConfig()
-            result = runner.invoke(main, ["config"])
-
+    def test_config_show_lists_groups_and_providers(self, config_dir: Path) -> None:
+        result = CliRunner().invoke(main, ["config"])
         assert result.exit_code == 0
-        assert '"app"' in result.output
+        assert "General:" in result.output
+        assert "default_mode" in result.output
+        assert "Providers:" in result.output
 
-    def test_config_set(self, tmp_path: Path) -> None:
-        home_dir = tmp_path / ".qracer"
-        home_dir.mkdir()
-        (home_dir / "config.toml").write_text('default_mode = "quick"\n')
+    def test_config_set_nested_and_seeds_file(self, config_dir: Path) -> None:
+        result = CliRunner().invoke(main, ["config", "set", "briefing.schedule", "0 9 * * *"])
+        assert result.exit_code == 0, result.output
+        assert "Set briefing.schedule = 0 9 * * *" in result.output
+        text = (config_dir / "config.toml").read_text(encoding="utf-8")
+        assert "[briefing]" in text and 'schedule = "0 9 * * *"' in text
 
-        runner = CliRunner()
-        with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["config", "--set", "default_mode=deep"])
-
+    def test_config_set_compat_flag(self, config_dir: Path) -> None:
+        result = CliRunner().invoke(main, ["config", "--set", "default_mode=deep"])
         assert result.exit_code == 0
-        assert "Set default_mode=deep" in result.output
-        content = (home_dir / "config.toml").read_text()
-        assert "deep" in content
+        assert 'default_mode = "deep"' in (config_dir / "config.toml").read_text(encoding="utf-8")
 
-    def test_config_set_bad_format(self, tmp_path: Path) -> None:
-        runner = CliRunner()
-        home_dir = tmp_path / ".qracer"
-        home_dir.mkdir()
-        (home_dir / "config.toml").write_text("")
+    def test_config_get(self, config_dir: Path) -> None:
+        CliRunner().invoke(main, ["config", "set", "max_iterations", "9"])
+        result = CliRunner().invoke(main, ["config", "get", "max_iterations"])
+        assert result.exit_code == 0
+        assert result.output.strip() == "9"
 
-        with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["config", "--set", "noequals"])
+    def test_config_set_invalid_choice(self, config_dir: Path) -> None:
+        result = CliRunner().invoke(main, ["config", "set", "default_mode", "sideways"])
+        assert result.exit_code != 0
+        assert "must be one of" in result.output
 
+    def test_config_set_unknown_key(self, config_dir: Path) -> None:
+        result = CliRunner().invoke(main, ["config", "set", "bogus", "1"])
+        assert result.exit_code != 0
+        assert "Unknown setting" in result.output
+
+    def test_config_set_bad_compat_format(self, config_dir: Path) -> None:
+        result = CliRunner().invoke(main, ["config", "--set", "noequals"])
         assert result.exit_code != 0
 
-    def test_config_set_no_config_file(self, tmp_path: Path) -> None:
-        home_dir = tmp_path / ".qracer"
-        home_dir.mkdir()  # No config.toml
+    def test_config_providers_enables_and_sets_key(self, config_dir: Path) -> None:
+        # Configure 'dart': enable = yes, enter a key, then blank to finish.
+        result = CliRunner().invoke(main, ["config", "providers"], input="dart\ny\nMY_DART_KEY\n\n")
+        assert result.exit_code == 0, result.output
+        providers = (config_dir / "providers.toml").read_text(encoding="utf-8")
+        assert "[providers.dart]" in providers
+        assert "enabled = true" in providers.split("[providers.dart]", 1)[1]
+        creds = (config_dir / "credentials.env").read_text(encoding="utf-8")
+        assert "DART_API_KEY=MY_DART_KEY" in creds
 
-        runner = CliRunner()
-        with patch("qracer.cli._user_dir", return_value=home_dir):
-            result = runner.invoke(main, ["config", "--set", "key=val"])
+    def test_provider_key_round_trips_through_load_config(self, config_dir: Path) -> None:
+        # Regression: a key set via the CLI under QRACER_CONFIG_DIR must actually be
+        # read back by load_config() (writer and loader must resolve the same dir).
+        CliRunner().invoke(main, ["config", "providers"], input="dart\ny\nROUNDTRIP\n\n")
+        from qracer.config.loader import load_config
 
-        assert result.exit_code != 0
+        cfg = load_config(force_reload=True)
+        assert cfg.credentials.get("DART_API_KEY") == "ROUNDTRIP"

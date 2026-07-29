@@ -7,7 +7,10 @@ Resolution order (first found wins):
 
 Merge strategy:
     - Project-local values override user-default values per file.
-    - credentials.env is always loaded from ~/.qracer/ only.
+    - credentials.env is loaded from QRACER_CONFIG_DIR if set, else ~/.qracer/ —
+      the same location the config writer writes to, so a saved key is read back.
+      It is deliberately NOT read from the project-local ./.qracer/ (avoids picking
+      up a secrets file committed to a repo).
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from qracer.config.models import (
     ProvidersConfig,
     QracerConfig,
 )
+from qracer.errors import QracerError
 
 _CONFIG_DIR_NAME = ".qracer"
 _CREDENTIALS_FILE = "credentials.env"
@@ -88,7 +92,7 @@ def resolve_config_dirs() -> list[Path]:
     return [d for d in candidates if d.is_dir()]
 
 
-class ConfigParseError(Exception):
+class ConfigParseError(QracerError):
     """Raised when a TOML configuration file exists but cannot be parsed."""
 
 
@@ -130,9 +134,20 @@ def _load_merged_toml(filename: str, dirs: list[Path]) -> dict[str, Any]:
     return result
 
 
+def _credentials_dir() -> Path:
+    """Directory credentials.env is read from: QRACER_CONFIG_DIR if set, else ~/.qracer/.
+
+    Mirrors the config writer's resolution so a key written via ``qracer config`` or
+    the web Settings tab is read back. Project-local ``./.qracer/`` is intentionally
+    excluded so a repo-committed secrets file is never picked up implicitly.
+    """
+    env_dir = os.environ.get("QRACER_CONFIG_DIR")
+    return Path(env_dir) if env_dir else _user_dir()
+
+
 def _load_credentials() -> dict[str, str]:
-    """Load credentials.env from the user-level directory only."""
-    creds_path = _user_dir() / _CREDENTIALS_FILE
+    """Load credentials.env from the resolved credentials directory."""
+    creds_path = _credentials_dir() / _CREDENTIALS_FILE
     if not creds_path.is_file():
         return {}
     values = dotenv_values(creds_path)

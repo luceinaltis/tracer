@@ -17,6 +17,7 @@ class TestNotificationCategory:
             "sector_concentration",
             "research_complete",
             "autonomous_mode",
+            "daily_briefing",
         }
         assert {c.value for c in NotificationCategory} == expected
 

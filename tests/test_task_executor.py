@@ -58,8 +58,8 @@ class TestTaskExecutor:
     async def test_check_executes_due_task(self, executor: TaskExecutor, store: TaskStore) -> None:
         store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
         # Force it to be due now
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
-        store._tasks[0].status = TaskStatus.PENDING
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].status = TaskStatus.PENDING
 
         results = await executor.check()
         assert len(results) == 1
@@ -68,14 +68,14 @@ class TestTaskExecutor:
 
     async def test_recurring_task_advances(self, executor: TaskExecutor, store: TaskStore) -> None:
         store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         await executor.check()
 
         # After execution, recurring task should be PENDING again with new next_run
-        assert store._tasks[0].status == TaskStatus.PENDING
-        assert store._tasks[0].run_count == 1
-        assert store._tasks[0].next_run_at != "2020-01-01T00:00:00+00:00"
+        assert store._items[0].status == TaskStatus.PENDING
+        assert store._items[0].run_count == 1
+        assert store._items[0].next_run_at != "2020-01-01T00:00:00+00:00"
 
     async def test_once_task_completed(self, executor: TaskExecutor, store: TaskStore) -> None:
         store.create(TaskActionType.ANALYZE, {"ticker": "AAPL"}, "2020-01-01T09:00:00")
@@ -83,7 +83,7 @@ class TestTaskExecutor:
 
         results = await executor.check()
         assert len(results) == 1
-        assert store._tasks[0].status == TaskStatus.COMPLETED
+        assert store._items[0].status == TaskStatus.COMPLETED
 
     async def test_failed_task(self, store: TaskStore) -> None:
         # Registry with no providers — will fail
@@ -91,7 +91,7 @@ class TestTaskExecutor:
         executor = TaskExecutor(store, empty_registry, LLMRegistry(), check_interval=0)
 
         store.create(TaskActionType.NEWS_SCAN, {"ticker": "AAPL"}, "every 1h")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert len(results) == 1
@@ -103,13 +103,13 @@ class TestTaskExecutor:
         executor = TaskExecutor(store, empty_registry, LLMRegistry(), check_interval=0)
 
         store.create(TaskActionType.NEWS_SCAN, {"ticker": "AAPL"}, "every 1h")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         await executor.check()
 
         # Even on failure, recurring task should advance
-        assert store._tasks[0].status == TaskStatus.PENDING
-        assert store._tasks[0].next_run_at != "2020-01-01T00:00:00+00:00"
+        assert store._items[0].status == TaskStatus.PENDING
+        assert store._items[0].next_run_at != "2020-01-01T00:00:00+00:00"
 
     async def test_custom_query_with_engine(self, store: TaskStore) -> None:
         mock_engine = MagicMock()
@@ -126,7 +126,7 @@ class TestTaskExecutor:
         )
 
         store.create(TaskActionType.CUSTOM_QUERY, {"query": "macro outlook"}, "every 1d")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert len(results) == 1
@@ -148,7 +148,7 @@ class TestTaskExecutor:
         )
 
         store.create(TaskActionType.ANALYZE, {"ticker": "TSLA"}, "every 2h")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert results[0].success is True
@@ -168,7 +168,7 @@ class TestTaskExecutor:
         )
 
         store.create(TaskActionType.PORTFOLIO_SNAPSHOT, {}, "every 1d")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert results[0].success is True
@@ -179,7 +179,7 @@ class TestTaskExecutor:
         executor = TaskExecutor(store, _make_registry(), LLMRegistry(), check_interval=0)
 
         store.create(TaskActionType.PORTFOLIO_SNAPSHOT, {}, "every 1d")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert results[0].success is True
@@ -189,7 +189,7 @@ class TestTaskExecutor:
         executor = TaskExecutor(store, _make_registry(), LLMRegistry(), check_interval=0)
 
         store.create(TaskActionType.CUSTOM_QUERY, {"query": "test"}, "every 1h")
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert results[0].success is True
@@ -203,7 +203,7 @@ class TestTaskExecutor:
             {"tickers": ["AAPL", "TSLA"]},
             "every 1d",
         )
-        store._tasks[0].next_run_at = "2020-01-01T00:00:00+00:00"
+        store._items[0].next_run_at = "2020-01-01T00:00:00+00:00"
 
         results = await executor.check()
         assert len(results) == 1
