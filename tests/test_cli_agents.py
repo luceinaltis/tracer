@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from qracer.agents_store import AgentStore
-from qracer.cli import _handle_run_agents
+from qracer.repl import _handle_run_agents
 from tests.helpers import FakeLLM
 
 
