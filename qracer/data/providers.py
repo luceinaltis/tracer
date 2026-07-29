@@ -6,9 +6,14 @@ The DataRegistry routes requests by capability with fallback support.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol, runtime_checkable
+
+# Callback signatures for streaming data updates. Both callbacks may be async.
+PriceCallback = Callable[[str, float], Awaitable[None]]
+NewsCallback = Callable[["NewsArticle"], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -106,3 +111,26 @@ class AlternativeProvider(Protocol):
     """Capability: Alternative data retrieval (insider trades, etc.)."""
 
     async def get_alternative(self, ticker: str, record_type: str) -> list[AlternativeRecord]: ...
+
+
+@runtime_checkable
+class StreamingProvider(Protocol):
+    """Capability: real-time data streaming via WebSocket.
+
+    Implementations maintain a persistent connection and dispatch price
+    and news updates to registered callbacks as messages arrive.  The
+    caller is responsible for connecting before subscribing and
+    disconnecting on shutdown.
+    """
+
+    async def connect(self) -> None: ...
+
+    async def disconnect(self) -> None: ...
+
+    async def subscribe(self, tickers: list[str]) -> None: ...
+
+    async def unsubscribe(self, tickers: list[str]) -> None: ...
+
+    def on_price(self, callback: PriceCallback) -> None: ...
+
+    def on_news(self, callback: NewsCallback) -> None: ...

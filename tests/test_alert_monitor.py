@@ -132,3 +132,46 @@ class TestAlertMonitor:
         # Only the 180 alert should trigger
         assert len(results) == 1
         assert len(store.get_active()) == 1
+
+
+class TestEvaluatePrice:
+    """Synchronous push-based alert evaluation used by the streaming adapter."""
+
+    def test_triggers_matching_alert(self, store) -> None:
+        store.create("AAPL", AlertCondition.ABOVE, 200.0)
+        monitor = AlertMonitor(store, DataRegistry(), check_interval=0)
+
+        results = monitor.evaluate_price("AAPL", 210.0)
+
+        assert len(results) == 1
+        assert results[0].triggered_price == 210.0
+        # Triggered alert becomes inactive.
+        assert len(store.get_active()) == 0
+
+    def test_does_not_trigger_unmatched_ticker(self, store) -> None:
+        store.create("AAPL", AlertCondition.ABOVE, 200.0)
+        monitor = AlertMonitor(store, DataRegistry(), check_interval=0)
+
+        results = monitor.evaluate_price("TSLA", 500.0)
+
+        assert results == []
+        assert len(store.get_active()) == 1
+
+    def test_threshold_not_met(self, store) -> None:
+        store.create("AAPL", AlertCondition.ABOVE, 200.0)
+        monitor = AlertMonitor(store, DataRegistry(), check_interval=0)
+
+        results = monitor.evaluate_price("AAPL", 199.0)
+
+        assert results == []
+        assert len(store.get_active()) == 1
+
+    def test_inactive_alert_is_skipped(self, store) -> None:
+        alert = store.create("AAPL", AlertCondition.ABOVE, 200.0)
+        store.mark_triggered(alert.id, 205.0)
+        monitor = AlertMonitor(store, DataRegistry(), check_interval=0)
+
+        # Even with a matching price, an already-triggered alert stays
+        # inactive and is not re-emitted.
+        results = monitor.evaluate_price("AAPL", 210.0)
+        assert results == []

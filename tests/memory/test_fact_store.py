@@ -173,6 +173,108 @@ class TestCatalystDateParsing:
 
 
 # ---------------------------------------------------------------------------
+# Finding CRUD
+# ---------------------------------------------------------------------------
+
+
+class TestFindingCRUD:
+    def test_save_and_get_finding(self, fact_store: FactStore) -> None:
+        fid = fact_store.save_finding(
+            entity="AAPL",
+            statement="iPhone sales up 12% YoY",
+            confidence=0.8,
+            source_tool="fundamentals",
+            session_id="sess_001",
+        )
+        assert fid >= 1
+
+        findings = fact_store.get_findings("AAPL")
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.entity == "AAPL"
+        assert f.statement == "iPhone sales up 12% YoY"
+        assert f.confidence == 0.8
+        assert f.source_tool == "fundamentals"
+        assert f.session_id == "sess_001"
+        assert f.event_date is None
+
+    def test_save_finding_clamps_confidence(self, fact_store: FactStore) -> None:
+        fact_store.save_finding(
+            entity="AAPL",
+            statement="noisy",
+            confidence=2.5,
+            source_tool="news",
+            session_id="s1",
+        )
+        fact_store.save_finding(
+            entity="AAPL",
+            statement="also noisy",
+            confidence=-0.3,
+            source_tool="news",
+            session_id="s1",
+        )
+        confidences = sorted(f.confidence for f in fact_store.get_findings("AAPL"))
+        assert confidences == [0.0, 1.0]
+
+    def test_get_findings_filters_by_entity(self, fact_store: FactStore) -> None:
+        fact_store.save_finding(
+            entity="AAPL",
+            statement="a1",
+            confidence=0.5,
+            source_tool="news",
+            session_id="s1",
+        )
+        fact_store.save_finding(
+            entity="MSFT",
+            statement="m1",
+            confidence=0.5,
+            source_tool="news",
+            session_id="s1",
+        )
+        aapl = fact_store.get_findings("AAPL")
+        msft = fact_store.get_findings("MSFT")
+        tsla = fact_store.get_findings("TSLA")
+        assert [f.statement for f in aapl] == ["a1"]
+        assert [f.statement for f in msft] == ["m1"]
+        assert tsla == []
+
+    def test_get_findings_ordered_desc(self, fact_store: FactStore) -> None:
+        for label in ("first", "second", "third"):
+            fact_store.save_finding(
+                entity="AAPL",
+                statement=label,
+                confidence=0.5,
+                source_tool="news",
+                session_id="s1",
+            )
+        findings = fact_store.get_findings("AAPL")
+        assert [f.statement for f in findings] == ["third", "second", "first"]
+
+    def test_get_findings_respects_limit(self, fact_store: FactStore) -> None:
+        for i in range(5):
+            fact_store.save_finding(
+                entity="AAPL",
+                statement=f"n{i}",
+                confidence=0.5,
+                source_tool="news",
+                session_id="s1",
+            )
+        assert len(fact_store.get_findings("AAPL", limit=2)) == 2
+
+    def test_save_finding_preserves_event_date(self, fact_store: FactStore) -> None:
+        fact_store.save_finding(
+            entity="AAPL",
+            statement="earnings announced",
+            confidence=0.7,
+            source_tool="news",
+            session_id="s1",
+            event_date="2026-05-01",
+        )
+        [finding] = fact_store.get_findings("AAPL")
+        assert finding.event_date == "2026-05-01"
+
+
+# ---------------------------------------------------------------------------
 # Context manager
 # ---------------------------------------------------------------------------
 

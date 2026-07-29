@@ -226,6 +226,147 @@ class TestMemorySearch:
         assert result.tool == "memory_search"
         assert result.data["results"] == []
 
+    async def test_fact_store_ticker_lookup_returns_theses(self) -> None:
+        """Structured theses from FactStore short-circuit the free-text search."""
+        from qracer.memory.fact_store import FactStore
+        from qracer.models import TradeThesis
+
+        store = FactStore()
+        try:
+            thesis = TradeThesis(
+                ticker="AAPL",
+                entry_zone=(175.0, 180.0),
+                target_price=200.0,
+                stop_loss=165.0,
+                risk_reward_ratio=2.5,
+                catalyst="AI revenue",
+                catalyst_date="Q2 2026",
+                conviction=8,
+                summary="Long AAPL.",
+            )
+            store.save_thesis(thesis, session_id="sess_001")
+
+            result = await memory_search(
+                "how's my AAPL thesis?",
+                searcher=None,
+                fact_store=store,
+                tickers=["AAPL"],
+            )
+
+            assert result.success is True
+            assert result.data["source"] == "fact_store"
+            assert len(result.data["theses"]) == 1
+            assert result.data["theses"][0]["ticker"] == "AAPL"
+            assert result.data["theses"][0]["conviction"] == 8
+            assert result.data["results"] == []
+        finally:
+            store.close()
+
+    async def test_fact_store_empty_falls_back_to_searcher(self) -> None:
+        """When FactStore has no ticker hits, free-text search runs instead."""
+        from unittest.mock import MagicMock
+
+        from qracer.memory.fact_store import FactStore
+        from qracer.memory.memory_searcher import SearchResult
+
+        store = FactStore()
+        searcher = MagicMock()
+        searcher.search.return_value = [
+            SearchResult(
+                session_id="sess_42",
+                summary="Prior AAPL analysis notes.",
+                score=1.5,
+                indexed_at=datetime(2026, 1, 1),
+            )
+        ]
+        try:
+            result = await memory_search(
+                "AAPL earnings",
+                searcher=searcher,
+                fact_store=store,
+                tickers=["AAPL"],
+            )
+
+            assert result.success is True
+            assert result.data["source"] == "memory_searcher"
+            assert result.data["results"][0]["session_id"] == "sess_42"
+            searcher.search.assert_called_once_with("AAPL earnings", limit=5)
+        finally:
+            store.close()
+
+    async def test_no_tickers_uses_searcher(self) -> None:
+        """Without tickers the FactStore path is skipped entirely."""
+        from unittest.mock import MagicMock
+
+        from qracer.memory.fact_store import FactStore
+
+        store = FactStore()
+        searcher = MagicMock()
+        searcher.search.return_value = []
+        try:
+            result = await memory_search(
+                "some macro query",
+                searcher=searcher,
+                fact_store=store,
+                tickers=[],
+            )
+
+            assert result.data["source"] == "memory_searcher"
+            searcher.search.assert_called_once()
+        finally:
+            store.close()
+
+    async def test_fact_store_exception_falls_back(self) -> None:
+        """A broken FactStore does not bubble up — we fall back to the searcher."""
+        from unittest.mock import MagicMock
+
+        broken_store = MagicMock()
+        broken_store.get_open_theses.side_effect = RuntimeError("db gone")
+
+        searcher = MagicMock()
+        searcher.search.return_value = []
+
+        result = await memory_search(
+            "AAPL",
+            searcher=searcher,
+            fact_store=broken_store,
+            tickers=["AAPL"],
+        )
+
+        assert result.success is True
+        assert result.data["source"] == "memory_searcher"
+        searcher.search.assert_called_once()
+
+    async def test_fact_store_findings_included_when_available(self) -> None:
+        """If the FactStore exposes get_findings, findings are included."""
+        from unittest.mock import MagicMock
+
+        from qracer.memory.fact_models import Finding
+
+        store = MagicMock()
+        store.get_open_theses.return_value = []
+        store.get_findings.return_value = [
+            Finding(
+                id=1,
+                entity="AAPL",
+                statement="P/E ratio 29",
+                confidence=0.9,
+                source_tool="fundamentals",
+                session_id="sess_001",
+            )
+        ]
+
+        result = await memory_search(
+            "AAPL valuation",
+            searcher=None,
+            fact_store=store,
+            tickers=["AAPL"],
+        )
+
+        assert result.data["source"] == "fact_store"
+        assert len(result.data["findings"]) == 1
+        assert result.data["findings"][0]["statement"] == "P/E ratio 29"
+
 
 class TestConfigure:
     def test_configure_lookback_days(self) -> None:

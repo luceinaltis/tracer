@@ -25,6 +25,7 @@ dart = ["httpx>=0.27.0"]
 all-llm = ["openai>=1.0.0", "google-generativeai>=0.8.0"]
 web = ["fastapi>=0.104.0", "uvicorn>=0.24.0", "nicegui>=1.4.0"]
 pdf = ["fpdf2>=2.7.0"]
+streaming = ["websockets>=12.0"]
 
 [dependency-groups]
 dev = [

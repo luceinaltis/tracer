@@ -6,6 +6,7 @@ import asyncio
 
 from qracer.conversation.intent import INTENT_TOOL_MAP, Intent
 from qracer.data.registry import DataRegistry
+from qracer.memory.fact_store import FactStore
 from qracer.memory.memory_searcher import MemorySearcher
 from qracer.models import ToolResult
 from qracer.tools import pipeline
@@ -37,6 +38,7 @@ async def invoke_tool(
     registry: DataRegistry,
     *,
     memory_searcher: MemorySearcher | None = None,
+    fact_store: FactStore | None = None,
 ) -> ToolResult:
     """Invoke a single pipeline tool based on the intent context."""
     tickers = intent.tickers
@@ -54,7 +56,12 @@ async def invoke_tool(
     if tool_name == "macro":
         return await pipeline.macro(intent.raw_query, registry)
     if tool_name == "memory_search":
-        return await pipeline.memory_search(intent.raw_query, searcher=memory_searcher)
+        return await pipeline.memory_search(
+            intent.raw_query,
+            searcher=memory_searcher,
+            fact_store=fact_store,
+            tickers=tickers,
+        )
 
     return ToolResult(
         tool=tool_name,
@@ -71,11 +78,19 @@ async def invoke_tools(
     registry: DataRegistry,
     *,
     memory_searcher: MemorySearcher | None = None,
+    fact_store: FactStore | None = None,
 ) -> list[ToolResult]:
     """Invoke multiple pipeline tools concurrently."""
     if not tool_names:
         return []
     coros = [
-        invoke_tool(name, intent, registry, memory_searcher=memory_searcher) for name in tool_names
+        invoke_tool(
+            name,
+            intent,
+            registry,
+            memory_searcher=memory_searcher,
+            fact_store=fact_store,
+        )
+        for name in tool_names
     ]
     return list(await asyncio.gather(*coros))

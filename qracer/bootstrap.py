@@ -33,6 +33,7 @@ def build_registries() -> tuple["LLMRegistry", "DataRegistry", list[str]]:
     from qracer.llm.providers import Role
     from qracer.llm.registry import LLMRegistry
     from qracer.provider_catalog import discover_data_providers, discover_llm_providers
+    from qracer.provider_lifecycle import initialize_provider_sync
 
     config = load_config()
     llm_registry = LLMRegistry()
@@ -70,6 +71,9 @@ def build_registries() -> tuple["LLMRegistry", "DataRegistry", list[str]]:
                 mod_path, cls_name = adapter_path.rsplit(".", 1)
                 adapter_cls = getattr(importlib.import_module(mod_path), cls_name)
                 adapter = adapter_cls(api_key=api_key) if api_key else adapter_cls()
+                if not initialize_provider_sync(name, adapter):
+                    warnings.append(f"{name}: failed initialize/health_check — excluded")
+                    continue
                 caps = []
                 for cp in cap_paths:
                     cp_mod, cp_name = cp.rsplit(".", 1)
@@ -86,6 +90,9 @@ def build_registries() -> tuple["LLMRegistry", "DataRegistry", list[str]]:
                 mod_path, cls_name = adapter_path.rsplit(".", 1)
                 adapter_cls = getattr(importlib.import_module(mod_path), cls_name)
                 adapter = adapter_cls(api_key=api_key)
+                if not initialize_provider_sync(name, adapter):
+                    warnings.append(f"{name}: failed initialize/health_check — excluded")
+                    continue
                 roles = [Role(v) for v in role_values]
                 llm_registry.register(name, adapter, roles)
             except Exception as exc:

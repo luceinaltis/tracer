@@ -23,6 +23,7 @@ from qracer.data.providers import (
 from qracer.data.registry import DataRegistry
 from qracer.llm.providers import CompletionRequest, Message, Role
 from qracer.llm.registry import LLMRegistry
+from qracer.memory.fact_store import FactStore
 from qracer.memory.memory_searcher import MemorySearcher
 from qracer.models import ToolResult, TradeThesis
 
@@ -445,23 +446,111 @@ async def risk_check(
         )
 
 
+def _structured_lookup(fact_store: FactStore, tickers: list[str]) -> dict[str, Any]:
+    """Fetch structured theses and findings for *tickers* from the fact store.
+
+    Findings lookup is gated on ``hasattr`` so the pipeline stays compatible
+    with builds of :class:`FactStore` that do not yet expose ``get_findings``
+    (see issue #157 / Phase 2).  Any store-side exception is swallowed — the
+    caller will then fall back to free-text search.
+    """
+    theses: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+
+    try:
+        open_theses = fact_store.get_open_theses(tickers)
+    except Exception:
+        logger.debug("fact_store.get_open_theses failed", exc_info=True)
+        open_theses = []
+
+    for t in open_theses:
+        theses.append(
+            {
+                "id": t.id,
+                "ticker": t.ticker,
+                "entry_zone": [t.entry_zone_low, t.entry_zone_high],
+                "target_price": t.target_price,
+                "stop_loss": t.stop_loss,
+                "risk_reward_ratio": t.risk_reward_ratio,
+                "catalyst": t.catalyst,
+                "catalyst_date": t.catalyst_date,
+                "conviction": t.conviction,
+                "summary": t.summary,
+                "status": t.status.value,
+                "session_id": t.session_id,
+            }
+        )
+
+    get_findings = getattr(fact_store, "get_findings", None)
+    if callable(get_findings):
+        for ticker in tickers:
+            try:
+                raw_findings: Any = get_findings(ticker)
+                ticker_findings: list[Any] = list(raw_findings or [])
+            except Exception:
+                logger.debug("fact_store.get_findings failed for %s", ticker, exc_info=True)
+                continue
+            for f in ticker_findings:
+                findings.append(
+                    {
+                        "entity": getattr(f, "entity", ticker),
+                        "statement": getattr(f, "statement", ""),
+                        "confidence": getattr(f, "confidence", 0.0),
+                        "source_tool": getattr(f, "source_tool", ""),
+                        "session_id": getattr(f, "session_id", ""),
+                        "event_date": getattr(f, "event_date", None),
+                    }
+                )
+
+    return {"theses": theses, "findings": findings}
+
+
 async def memory_search(
-    query: str, searcher: MemorySearcher | None = None, **kwargs: object
+    query: str,
+    searcher: MemorySearcher | None = None,
+    *,
+    fact_store: FactStore | None = None,
+    tickers: list[str] | None = None,
+    **kwargs: object,
 ) -> ToolResult:
     """Search past analyses stored in session memory.
 
-    If a MemorySearcher instance is provided, performs a real FTS search.
-    Otherwise returns empty results (graceful degradation).
+    Two-stage retrieval:
+
+    1. When a :class:`FactStore` is available and *tickers* is non-empty,
+       run a structured lookup first (open theses + findings).  If any
+       structured records are found they are returned directly — this is the
+       deterministic path for ticker-scoped queries ("how's my AAPL thesis
+       going?").
+    2. Otherwise fall back to the existing :class:`MemorySearcher` free-text
+       search over compacted session summaries.
+
+    If neither backend is available (nor produces results), an empty
+    ``results`` list is returned so the caller degrades gracefully.
     """
 
     async def _fetch() -> dict[str, Any]:
+        # Stage 1: structured FactStore lookup.
+        if fact_store is not None and tickers:
+            structured = _structured_lookup(fact_store, tickers)
+            if structured["theses"] or structured["findings"]:
+                return {
+                    "query": query,
+                    "source": "fact_store",
+                    "results": [],
+                    "theses": structured["theses"],
+                    "findings": structured["findings"],
+                }
+
+        # Stage 2: free-text fallback.
         if searcher is None:
-            return {"query": query, "results": []}
+            return {"query": query, "source": "none", "results": []}
 
         try:
             results = searcher.search(query, limit=5)
             return {
                 "query": query,
+                "source": "memory_searcher",
                 "results": [
                     {
                         "session_id": r.session_id,
@@ -473,6 +562,6 @@ async def memory_search(
             }
         except Exception:
             logger.debug("memory_search query failed for '%s'", query, exc_info=True)
-            return {"query": query, "results": []}
+            return {"query": query, "source": "none", "results": []}
 
     return await _run_tool("memory_search", "SessionMemory", _fetch, label=query, stale_check=False)

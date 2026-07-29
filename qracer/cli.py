@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
@@ -25,6 +26,10 @@ from qracer.repl import (
     _repl_loop,
     _report_agent_results,
 )
+
+if TYPE_CHECKING:
+    from qracer.config.models import QracerConfig
+    from qracer.data.providers import StreamingProvider
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +429,33 @@ def _show_settings() -> None:
 _build_registries = build_registries
 
 
+def _build_streaming_adapter(config: QracerConfig) -> StreamingProvider | None:
+    """Return a Finnhub streaming adapter if enabled and available.
+
+    The adapter is only constructed when the ``finnhub`` provider is
+    enabled in ``providers.toml`` *and* an API key is available *and*
+    the ``websockets`` package is importable.  Any failure returns
+    ``None`` so the caller falls back to REST polling.
+    """
+    finnhub_cfg = config.providers.providers.get("finnhub")
+    if finnhub_cfg is None or not finnhub_cfg.enabled:
+        return None
+    api_key_env = finnhub_cfg.api_key_env or "FINNHUB_API_KEY"
+    api_key = config.credentials.get(api_key_env) or os.environ.get(api_key_env)
+    if not api_key:
+        return None
+    try:
+        from qracer.data.finnhub_ws import FinnhubWebSocketAdapter
+
+        return FinnhubWebSocketAdapter(api_key=api_key)
+    except ImportError:
+        logger.info("Streaming disabled — install 'qracer[streaming]' for WebSocket support")
+        return None
+    except Exception as exc:
+        logger.warning("Streaming adapter unavailable: %s", exc)
+        return None
+
+
 @main.command()
 def repl() -> None:
     """Start interactive conversational session."""
@@ -505,6 +537,7 @@ def repl() -> None:
         memory_searcher=memory_searcher,
         summaries_dir=summaries_dir,
         fact_store=fact_store,
+        context_path=_user_dir() / "context.json",
     )
 
     task_executor = TaskExecutor(task_store, data_registry, llm_registry, engine=engine)
@@ -740,6 +773,9 @@ def serve(check_interval: int) -> None:
         except Exception as exc:  # invalid cron
             click.echo(f"  ⚠ Briefing schedule invalid ({exc}) — briefing disabled.")
 
+    # Real-time price streaming (WebSocket) — falls back to REST polling if unavailable.
+    streaming_adapter = _build_streaming_adapter(config)
+
     server = Server(
         alert_monitor,
         task_executor,
@@ -748,6 +784,7 @@ def serve(check_interval: int) -> None:
         agent_monitor=agent_monitor,
         briefing_scheduler=briefing_scheduler,
         telegram_poller=telegram_poller,
+        streaming_adapter=streaming_adapter,
         tick_interval=1.0,
     )
 
@@ -776,11 +813,19 @@ def serve(check_interval: int) -> None:
         click.echo(f"  Custom agents: {scheduled} autonomous (cron/continuous) active")
     if briefing_scheduler is not None:
         click.echo(f"  Daily briefing: schedule '{app_cfg.briefing.schedule}'")
+    if streaming_adapter is not None:
+        click.echo("  Streaming: Finnhub WebSocket (real-time alerts)")
     click.echo("  Press Ctrl+C to stop.\n")
+
+    from qracer.provider_lifecycle import shutdown_all_providers_sync
 
     try:
         asyncio.run(server.run())
     finally:
+        try:
+            shutdown_all_providers_sync(data_registry, llm_registry)
+        except Exception:
+            logger.debug("Provider shutdown raised", exc_info=True)
         release(pid_path)
         click.echo("qracer serve stopped.")
 
