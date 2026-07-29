@@ -1,4 +1,4 @@
-"""Tests for the CLI custom-agent trigger helper (`/run`)."""
+"""Tests for the REPL custom-agent trigger helper (`/run`), in qracer.repl."""
 
 from __future__ import annotations
 
