@@ -144,20 +144,25 @@ class TestParseOhlcv:
 
 class TestParseDerivatives:
     def test_futures(self) -> None:
+        # Field names match a live inquire-price output1 / display-board-futures row.
         out = {
-            "futs_prpr": "412.50",
-            "hts_kor_isnm": "KOSPI200 F 202609",
-            "futs_prdy_vrss": "-3.20",
-            "prdy_ctrt": "-0.77",
-            "acml_vol": "120000",
-            "hts_otst_stpl_qty": "300000",
+            "futs_prpr": "1036.28",
+            "hts_kor_isnm": "미니F 202608",
+            "futs_prdy_vrss": "172.70",
+            "futs_prdy_ctrt": "20.00",
+            "acml_vol": "114838",
+            "hts_otst_stpl_qty": "100264",
+            "basis": "0.85",
         }
-        q = _parse_futures(out, "101W09")
-        assert q.code == "101W09" and q.price == 412.5
-        assert q.open_interest == 300000 and q.volume == 120000
-        assert q.change == -3.2
+        q = _parse_futures(out, "A05608")
+        assert q.code == "A05608" and q.price == 1036.28
+        assert q.open_interest == 100264 and q.volume == 114838
+        assert q.change == 172.7 and q.change_pct == 20.0
+        assert q.basis == 0.85
+        assert q.expiry == "202608"  # extracted from the HTS name
 
     def test_option_chain_splits_calls_and_puts(self) -> None:
+        # output1 = calls, output2 = puts (live display-board-callput shape).
         payload = {
             "output1": [
                 {
@@ -166,7 +171,9 @@ class TestParseDerivatives:
                     "acpr": "320.0",
                     "acml_vol": "500",
                     "hts_otst_stpl_qty": "1200",
-                    "delta": "0.55",
+                    "hts_ints_vltl": "18.5",
+                    "delta_val": "0.55",
+                    "gama": "0.01",
                 },
             ],
             "output2": [
@@ -175,6 +182,7 @@ class TestParseDerivatives:
                     "optn_prpr": "4.20",
                     "acpr": "320.0",
                     "acml_vol": "400",
+                    "delta_val": "-0.45",
                 },
                 {"optn_shrn_iscd": "", "optn_prpr": "1", "acpr": "1"},  # dropped: no code
             ],
@@ -183,7 +191,9 @@ class TestParseDerivatives:
         assert chain.underlying == "KOSPI200" and chain.expiry == "202609"
         assert len(chain.calls) == 1 and chain.calls[0].right == "C"
         assert chain.calls[0].strike == 320.0 and chain.calls[0].delta == 0.55
+        assert chain.calls[0].implied_vol == 18.5 and chain.calls[0].gamma == 0.01
         assert len(chain.puts) == 1 and chain.puts[0].right == "P"
+        assert chain.puts[0].delta == -0.45
 
 
 # ---------------------------------------------------------------------------
@@ -302,17 +312,52 @@ class TestPriceProvider:
 
 
 class TestDerivativesProvider:
-    async def test_get_futures_quote(self, tmp_path: Path) -> None:
+    async def test_get_futures_quote_reads_output1(self, tmp_path: Path) -> None:
+        # The contract quote is in output1; output2 is the underlying index.
         body = {
             "rt_cd": "0",
-            "output": {"futs_prpr": "412.50", "acml_vol": "120000", "hts_otst_stpl_qty": "300000"},
+            "output1": {
+                "futs_prpr": "1036.28",
+                "acml_vol": "114838",
+                "hts_otst_stpl_qty": "100264",
+                "basis": "0.85",
+            },
+            "output2": {"bstp_nmix_prpr": "6595.45"},
         }
-        handler = _router({"domestic-futureoption/v1/quotations/inquire-price": body})
+        handler = _router({"quotations/inquire-price": body})
         adapter = _adapter(handler, tmp_path)
-        q = await adapter.get_futures_quote("101W09")
-        assert q.price == 412.5 and q.open_interest == 300000
+        q = await adapter.get_futures_quote("A05608")
+        assert q.price == 1036.28 and q.open_interest == 100264 and q.basis == 0.85
 
-    async def test_get_option_chain(self, tmp_path: Path) -> None:
+    async def test_get_futures_board(self, tmp_path: Path) -> None:
+        body = {
+            "rt_cd": "0",
+            "output": [
+                {
+                    "futs_shrn_iscd": "A05608",
+                    "hts_kor_isnm": "미니F 202608",
+                    "futs_prpr": "1036.28",
+                    "hts_otst_stpl_qty": "100264",
+                },
+                {"futs_shrn_iscd": "", "futs_prpr": "0"},  # dropped: no code
+            ],
+        }
+        handler = _router({"display-board-futures": body})
+        adapter = _adapter(handler, tmp_path)
+        board = await adapter.get_futures_board()
+        assert len(board) == 1
+        assert board[0].code == "A05608" and board[0].expiry == "202608"
+
+    async def test_list_option_expiries_sorted(self, tmp_path: Path) -> None:
+        body = {
+            "rt_cd": "0",
+            "output": [{"mtrt_yymm": "202609"}, {"mtrt_yymm": "202608"}, {"mtrt_yymm": ""}],
+        }
+        handler = _router({"display-board-option-list": body})
+        adapter = _adapter(handler, tmp_path)
+        assert await adapter.list_option_expiries() == ["202608", "202609"]
+
+    async def test_get_option_chain_explicit_expiry(self, tmp_path: Path) -> None:
         body = {
             "rt_cd": "0",
             "output1": [
@@ -322,8 +367,25 @@ class TestDerivativesProvider:
                 {"optn_shrn_iscd": "301AB320", "optn_prpr": "4.2", "acpr": "320", "acml_vol": "4"},
             ],
         }
-        handler = _router({"display-board-option-list": body})
+        handler = _router({"display-board-callput": body})
         adapter = _adapter(handler, tmp_path)
-        chain = await adapter.get_option_chain("KOSPI200", "202609")
+        chain = await adapter.get_option_chain(expiry="202609")
+        assert chain.expiry == "202609"
         assert len(chain.calls) == 1 and len(chain.puts) == 1
         assert chain.calls[0].strike == 320.0
+
+    async def test_get_option_chain_auto_discovers_nearest_expiry(self, tmp_path: Path) -> None:
+        # No expiry -> adapter first lists months, then queries the nearest.
+        months = {"rt_cd": "0", "output": [{"mtrt_yymm": "202609"}, {"mtrt_yymm": "202608"}]}
+        chain_body = {
+            "rt_cd": "0",
+            "output1": [{"optn_shrn_iscd": "C1", "optn_prpr": "1", "acpr": "320"}],
+            "output2": [],
+        }
+        handler = _router(
+            {"display-board-option-list": months, "display-board-callput": chain_body}
+        )
+        adapter = _adapter(handler, tmp_path)
+        chain = await adapter.get_option_chain()
+        assert chain.expiry == "202608"  # nearest of the listed months
+        assert len(chain.calls) == 1

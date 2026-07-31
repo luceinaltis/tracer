@@ -109,6 +109,7 @@ class OptionQuote:
     gamma: float | None = None
     theta: float | None = None
     vega: float | None = None
+    rho: float | None = None
 
 
 @dataclass(frozen=True)
