@@ -49,6 +49,9 @@ class ProviderConfig(BaseModel):
     priority: int = 100
     tier: Literal["hot", "warm", "cold"] = "warm"
     api_key_env: str | None = None
+    # Second credential env var for providers needing two secrets (e.g. KIS
+    # appkey + appsecret). Resolved and passed as ``api_secret`` to the adapter.
+    secret_env: str | None = None
     kind: Literal["data", "llm"] = "data"
 
 

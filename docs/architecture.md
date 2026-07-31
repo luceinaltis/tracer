@@ -52,7 +52,8 @@ registry.get(PriceProvider)          # highest-priority adapter
 ```
 
 Current capabilities: `PriceProvider`, `FundamentalProvider`, `MacroProvider`,
-`NewsProvider`, `AlternativeProvider` (insider). Wired adapters:
+`NewsProvider`, `AlternativeProvider` (insider), `DerivativesProvider` (futures &
+option chains). Wired adapters:
 
 | Capability | Adapter | Notes |
 |---|---|---|
@@ -60,6 +61,7 @@ Current capabilities: `PriceProvider`, `FundamentalProvider`, `MacroProvider`,
 | Fundamentals / News / Insider | Finnhub (`data/finnhub_adapter.py`) | US market; news sentiment not populated |
 | Macro | FRED (`data/fred_adapter.py`) | 6 named series + raw series id |
 | Fundamentals / Disclosures / Insider | DART (`data/dart_adapter.py`) | Korea (OpenDART); ticker = 6-digit KRX code (e.g. `005930`) |
+| Price / OHLCV, Derivatives | KIS (`data/kis_adapter.py`) | Korea (한국투자증권); KRX prices + KOSPI 200 futures/option chains |
 
 DART and Finnhub both serve the fundamentals/news/insider capabilities: DART is
 higher priority but fails fast on non-6-digit tickers, so Korean codes route to DART
@@ -67,6 +69,17 @@ and everything else falls through to Finnhub. This is the fallback machinery in
 actual use. Adding a source = a capability adapter + one entry in
 `provider_catalog.py` **or** an external package on the `qracer.data_providers`
 entry-point group.
+
+**KIS** is the first two-secret provider: it needs an `appkey` **and** an
+`appsecret` (`ProviderConfig` grows a `secret_env` alongside `api_key_env`; the
+registry builder resolves both and passes them as `api_key`/`api_secret`). The
+adapter exchanges them for a short-lived OAuth bearer token cached at
+`~/.qracer/kis_token.json` (KIS issues tokens at most once per minute). Its stock
+price/OHLCV endpoints are verified against the live API; the 국내선물옵션
+(futures/option) `tr_id`s and response fields are mapped from the KIS portal docs
+and should be smoke-tested against a live account, since they can vary by account
+tier. As a `PriceProvider` it sits above DART/yfinance for Korean codes (priority
+20) and fails fast on non-6-digit tickers so US symbols fall through to yfinance.
 
 ## Configuration (`.qracer/`)
 

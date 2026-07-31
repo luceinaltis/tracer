@@ -76,6 +76,51 @@ class AlternativeRecord:
     date: date
 
 
+@dataclass(frozen=True)
+class FuturesQuote:
+    """A single futures contract quote (e.g. a KOSPI 200 futures month)."""
+
+    code: str
+    price: float
+    underlying: str | None = None
+    expiry: str | None = None  # contract month, ``YYYYMM``
+    change: float | None = None
+    change_pct: float | None = None
+    volume: int | None = None
+    open_interest: int | None = None
+    basis: float | None = None  # futures price minus spot, when known
+
+
+@dataclass(frozen=True)
+class OptionQuote:
+    """A single option contract quote, with greeks when the source supplies them."""
+
+    code: str
+    right: str  # "C" (call) or "P" (put)
+    strike: float
+    price: float
+    underlying: str | None = None
+    expiry: str | None = None  # contract month, ``YYYYMM``
+    change: float | None = None
+    volume: int | None = None
+    open_interest: int | None = None
+    implied_vol: float | None = None
+    delta: float | None = None
+    gamma: float | None = None
+    theta: float | None = None
+    vega: float | None = None
+
+
+@dataclass(frozen=True)
+class OptionChain:
+    """Calls and puts for one underlying at one expiry."""
+
+    underlying: str
+    expiry: str | None
+    calls: list[OptionQuote]
+    puts: list[OptionQuote]
+
+
 @runtime_checkable
 class PriceProvider(Protocol):
     """Capability: Price/OHLCV data retrieval."""
@@ -111,6 +156,23 @@ class AlternativeProvider(Protocol):
     """Capability: Alternative data retrieval (insider trades, etc.)."""
 
     async def get_alternative(self, ticker: str, record_type: str) -> list[AlternativeRecord]: ...
+
+
+@runtime_checkable
+class DerivativesProvider(Protocol):
+    """Capability: exchange-traded derivatives (futures & option chains).
+
+    Distinct from :class:`PriceProvider`: a derivative is identified by a
+    contract code (or an underlying + expiry for a chain), and its quote
+    carries derivative-specific fields — open interest, greeks, basis —
+    that do not fit an OHLCV bar.
+    """
+
+    async def get_futures_quote(self, code: str) -> FuturesQuote: ...
+
+    async def get_option_chain(
+        self, underlying: str, expiry: str | None = None
+    ) -> OptionChain: ...
 
 
 @runtime_checkable

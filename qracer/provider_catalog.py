@@ -47,6 +47,13 @@ BUILTIN_DATA_PROVIDERS: dict[str, tuple[str, list[str]]] = {
             "qracer.data.providers.AlternativeProvider",
         ],
     ),
+    "kis": (
+        "qracer.data.kis_adapter.KisAdapter",
+        [
+            "qracer.data.providers.PriceProvider",
+            "qracer.data.providers.DerivativesProvider",
+        ],
+    ),
 }
 
 # LLM providers: name -> (adapter import path, [role enum values])
@@ -96,6 +103,7 @@ _DATA_CAPABILITY_PROTOCOLS: list[tuple[str, str]] = [
     ("qracer.data.providers", "MacroProvider"),
     ("qracer.data.providers", "NewsProvider"),
     ("qracer.data.providers", "AlternativeProvider"),
+    ("qracer.data.providers", "DerivativesProvider"),
     ("qracer.data.providers", "StreamingProvider"),
 ]
 
