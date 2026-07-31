@@ -65,12 +65,29 @@ def build_registries() -> tuple["LLMRegistry", "DataRegistry", list[str]]:
                 logger.warning("Provider '%s' skipped: %s not set", name, prov_cfg.api_key_env)
                 continue
 
+        # Resolve a second secret for two-credential providers (e.g. KIS).
+        api_secret: str | None = None
+        if prov_cfg.secret_env:
+            api_secret = config.credentials.get(prov_cfg.secret_env) or os.environ.get(
+                prov_cfg.secret_env
+            )
+            if not api_secret:
+                msg = f"{name}: {prov_cfg.secret_env} not set — skipped"
+                warnings.append(msg)
+                logger.warning("Provider '%s' skipped: %s not set", name, prov_cfg.secret_env)
+                continue
+
         if prov_cfg.kind == "data" and name in data_catalog:
             adapter_path, cap_paths = data_catalog[name]
             try:
                 mod_path, cls_name = adapter_path.rsplit(".", 1)
                 adapter_cls = getattr(importlib.import_module(mod_path), cls_name)
-                adapter = adapter_cls(api_key=api_key) if api_key else adapter_cls()
+                if api_key and api_secret:
+                    adapter = adapter_cls(api_key=api_key, api_secret=api_secret)
+                elif api_key:
+                    adapter = adapter_cls(api_key=api_key)
+                else:
+                    adapter = adapter_cls()
                 if not initialize_provider_sync(name, adapter):
                     warnings.append(f"{name}: failed initialize/health_check — excluded")
                     continue

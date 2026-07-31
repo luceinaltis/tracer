@@ -55,3 +55,14 @@ priority = 40
 tier = "warm"
 kind = "data"
 api_key_env = "DART_API_KEY"
+
+[providers.kis]
+# 한국투자증권 (Korea Investment & Securities) 오픈API — KRX prices + derivatives.
+# Price/OHLCV for 6-digit KRX codes (e.g. 005930) plus futures & option chains.
+# Needs TWO secrets: appkey + appsecret. https://apiportal.koreainvestment.com
+enabled = false
+priority = 20
+tier = "hot"
+kind = "data"
+api_key_env = "KIS_APP_KEY"
+secret_env = "KIS_SECRET_KEY"
