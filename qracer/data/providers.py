@@ -170,9 +170,7 @@ class DerivativesProvider(Protocol):
 
     async def get_futures_quote(self, code: str) -> FuturesQuote: ...
 
-    async def get_option_chain(
-        self, underlying: str, expiry: str | None = None
-    ) -> OptionChain: ...
+    async def get_option_chain(self, underlying: str, expiry: str | None = None) -> OptionChain: ...
 
 
 @runtime_checkable
