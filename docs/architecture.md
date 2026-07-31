@@ -74,12 +74,15 @@ entry-point group.
 `appsecret` (`ProviderConfig` grows a `secret_env` alongside `api_key_env`; the
 registry builder resolves both and passes them as `api_key`/`api_secret`). The
 adapter exchanges them for a short-lived OAuth bearer token cached at
-`~/.qracer/kis_token.json` (KIS issues tokens at most once per minute). Its stock
-price/OHLCV endpoints are verified against the live API; the 국내선물옵션
-(futures/option) `tr_id`s and response fields are mapped from the KIS portal docs
-and should be smoke-tested against a live account, since they can vary by account
-tier. As a `PriceProvider` it sits above DART/yfinance for Korean codes (priority
-20) and fails fast on non-6-digit tickers so US symbols fall through to yfinance.
+`~/.qracer/kis_token.json` (KIS issues tokens at most once per minute). All its
+endpoints are verified against the live API: stock price/OHLCV, plus the
+국내선물옵션 boards behind `DerivativesProvider` — `get_futures_quote` (contract
+quote in the response `output1`; `output2` is the underlying index),
+`get_option_chain` (`display-board-callput`, calls in `output1` / puts in `output2`,
+with greeks + IV + open interest), and the discovery helpers `get_futures_board`
+and `list_option_expiries` that surface the codes/expiries those take. As a
+`PriceProvider` it sits above DART/yfinance for Korean codes (priority 20) and fails
+fast on non-6-digit tickers so US symbols fall through to yfinance.
 
 ## Configuration (`.qracer/`)
 

@@ -7,15 +7,18 @@ adapter needs *two* credentials (wired through ``ProviderConfig.api_key_env`` +
 ``secret_env``). It provides two capabilities, keyed by KRX contract code:
 
 - PriceProvider       → current price + daily OHLCV for a 6-digit KRX stock code
-- DerivativesProvider → futures quotes and option chains (국내선물옵션)
+- DerivativesProvider → futures quotes and option chains (국내선물옵션), plus
+                        ``get_futures_board`` / ``list_option_expiries`` for
+                        discovering the contract codes and expiries they take
 
 Tokens are issued at most once per minute per app, so the access token is cached in
 memory and on disk (``~/.qracer/kis_token.json``) and refreshed only near expiry.
 
-The stock endpoints (``inquire-price`` / ``inquire-daily-itemchartprice``) are verified
-against the live API. The 국내선물옵션 endpoints' exact ``tr_id`` / response fields are
-mapped from the KIS portal docs and should be smoke-tested against a live account
-(they can vary by account type); see docs/architecture.md.
+All endpoints (stock ``inquire-price`` / ``inquire-daily-itemchartprice`` and the
+국내선물옵션 ``inquire-price`` / ``display-board-*`` boards) are verified against the
+live API. Note the futures quote lives in the response ``output1`` (``output2`` is the
+underlying index), and the option board returns calls in ``output1`` and puts in
+``output2``.
 """
 
 from __future__ import annotations
@@ -45,11 +48,13 @@ logger = logging.getLogger(__name__)
 _REAL_URL = "https://openapi.koreainvestment.com:9443"
 _MOCK_URL = "https://openapivts.koreainvestment.com:29443"
 
-# tr_id codes (per KIS portal). Stock ones are live-verified; derivatives are from docs.
+# tr_id codes (per KIS portal), all live-verified against the real API.
 _TR_STOCK_PRICE = "FHKST01010100"  # 주식현재가 시세
 _TR_STOCK_DAILY = "FHKST03010100"  # 주식일별 기간별시세
-_TR_FUT_PRICE = "FHMIF10000000"  # 선물옵션 시세
-_TR_OPT_BOARD = "FHPIF05030100"  # 국내옵션전광판 콜풋
+_TR_FUT_PRICE = "FHMIF10000000"  # 선물옵션 시세 (single contract)
+_TR_FUT_BOARD = "FHPIF05030200"  # 국내선물 전광판 (contract list)
+_TR_OPT_CALLPUT = "FHPIF05030100"  # 국내옵션전광판 콜풋 (chain)
+_TR_OPT_MONTHS = "FHPIO056104C0"  # 국내옵션전광판 월물 리스트
 
 # Refresh the token when fewer than this many seconds of its life remain.
 _TOKEN_REFRESH_MARGIN = 300
@@ -128,25 +133,36 @@ def _parse_ohlcv(output2: list[dict]) -> list[OHLCV]:
     return bars
 
 
+def _expiry_from_name(name: object) -> str | None:
+    """Extract a ``YYYYMM`` contract month from an HTS name like ``미니F 202608``."""
+    text = str(name or "")
+    for token in text.replace("(", " ").replace(")", " ").split():
+        if len(token) == 6 and token.isdigit():
+            return token
+    return None
+
+
 def _parse_futures(output: dict, code: str) -> FuturesQuote:
-    """Map a 선물옵션 ``inquire-price`` ``output`` object to a FuturesQuote."""
-    price = _to_float(output.get("futs_prpr")) or _to_float(output.get("stck_prpr")) or 0.0
+    """Map a 선물 ``inquire-price`` ``output1`` (or 전광판 row) to a FuturesQuote."""
+    name = output.get("hts_kor_isnm")
     return FuturesQuote(
         code=code,
-        price=price,
-        underlying=output.get("hts_kor_isnm") or None,
-        change=_to_float(output.get("futs_prdy_vrss") or output.get("prdy_vrss")),
-        change_pct=_to_float(output.get("prdy_ctrt")),
+        price=_to_float(output.get("futs_prpr")) or 0.0,
+        underlying=name or None,
+        expiry=_expiry_from_name(name),
+        change=_to_float(output.get("futs_prdy_vrss")),
+        change_pct=_to_float(output.get("futs_prdy_ctrt")),
         volume=_to_int(output.get("acml_vol")),
-        open_interest=_to_int(output.get("hts_otst_stpl_qty") or output.get("otst_stpl_qty")),
+        open_interest=_to_int(output.get("hts_otst_stpl_qty")),
+        basis=_to_float(output.get("basis")),
     )
 
 
 def _parse_option_row(row: dict, right: str) -> OptionQuote | None:
-    """Map one row of an 옵션전광판 payload to an OptionQuote (None if unparseable)."""
-    code = (row.get("optn_shrn_iscd") or row.get("mksc_shrn_iscd") or "").strip()
-    price = _to_float(row.get("optn_prpr") or row.get("stck_prpr"))
-    strike = _to_float(row.get("acpr") or row.get("optn_strk_prc"))
+    """Map one row of an 옵션전광판 콜풋 payload to an OptionQuote (None if unparseable)."""
+    code = (row.get("optn_shrn_iscd") or "").strip()
+    price = _to_float(row.get("optn_prpr"))
+    strike = _to_float(row.get("acpr"))
     if not code or price is None or strike is None:
         return None
     return OptionQuote(
@@ -154,27 +170,25 @@ def _parse_option_row(row: dict, right: str) -> OptionQuote | None:
         right=right,
         strike=strike,
         price=price,
-        change=_to_float(row.get("optn_prdy_vrss") or row.get("prdy_vrss")),
+        change=_to_float(row.get("optn_prdy_vrss")),
         volume=_to_int(row.get("acml_vol")),
-        open_interest=_to_int(row.get("hts_otst_stpl_qty") or row.get("otst_stpl_qty")),
-        implied_vol=_to_float(row.get("hts_ints_vltl") or row.get("optn_ints_vltl")),
-        delta=_to_float(row.get("delta")),
-        gamma=_to_float(row.get("gama") or row.get("gamma")),
+        open_interest=_to_int(row.get("hts_otst_stpl_qty")),
+        implied_vol=_to_float(row.get("hts_ints_vltl")),
+        delta=_to_float(row.get("delta_val")),
+        gamma=_to_float(row.get("gama")),
         theta=_to_float(row.get("theta")),
         vega=_to_float(row.get("vega")),
+        rho=_to_float(row.get("rho")),
     )
 
 
 def _parse_option_chain(payload: dict, underlying: str, expiry: str | None) -> OptionChain:
-    """Map an 옵션전광판 콜풋 payload (call rows + put rows) to an OptionChain.
+    """Map an 옵션전광판 콜풋 payload to an OptionChain (``output1`` calls, ``output2`` puts).
 
-    KIS returns calls and puts in two arrays; field names differ by account tier,
-    so both common spellings are accepted and unparseable rows are dropped.
+    Unparseable rows (e.g. header/blank strikes) are dropped rather than raising.
     """
-    calls_raw = payload.get("output1") or payload.get("call") or []
-    puts_raw = payload.get("output2") or payload.get("put") or []
-    calls = [q for row in calls_raw if (q := _parse_option_row(row, "C"))]
-    puts = [q for row in puts_raw if (q := _parse_option_row(row, "P"))]
+    calls = [q for row in (payload.get("output1") or []) if (q := _parse_option_row(row, "C"))]
+    puts = [q for row in (payload.get("output2") or []) if (q := _parse_option_row(row, "P"))]
     return OptionChain(underlying=underlying, expiry=expiry, calls=calls, puts=puts)
 
 
@@ -330,31 +344,85 @@ class KisAdapter:
     # -- DerivativesProvider -------------------------------------------------
 
     async def get_futures_quote(self, code: str) -> FuturesQuote:
-        """Quote for a single futures contract (e.g. a KOSPI 200 futures month)."""
+        """Quote for a single futures contract by KIS code (e.g. ``A05608``).
+
+        The contract quote is in the response ``output1`` object (``output2`` holds
+        the underlying index). Discover valid codes with :meth:`get_futures_board`.
+        """
         contract = code.strip().upper()
         payload = await self._get(
             "/uapi/domestic-futureoption/v1/quotations/inquire-price",
             _TR_FUT_PRICE,
             {"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": contract},
         )
-        return _parse_futures(payload.get("output") or {}, contract)
+        return _parse_futures(payload.get("output1") or {}, contract)
 
-    async def get_option_chain(self, underlying: str, expiry: str | None = None) -> OptionChain:
-        """Call/put option chain for an underlying (optionally a specific expiry ``YYYYMM``)."""
-        target = underlying.strip().upper()
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "O",
-            "FID_COND_SCR_DIV_CODE": "20503",
-            "FID_MRKT_CLS_CODE": target,
-        }
-        if expiry:
-            params["FID_INPUT_DATE_1"] = expiry
+    async def get_futures_board(self, market: str = "MKI") -> list[FuturesQuote]:
+        """All listed futures contracts on a board (``MKI`` = KOSPI 200 mini futures).
+
+        Useful for discovering the contract codes that :meth:`get_futures_quote`
+        expects.
+        """
+        payload = await self._get(
+            "/uapi/domestic-futureoption/v1/quotations/display-board-futures",
+            _TR_FUT_BOARD,
+            {
+                "FID_COND_MRKT_DIV_CODE": "F",
+                "FID_COND_SCR_DIV_CODE": "20503",
+                "FID_COND_MRKT_CLS_CODE": market,
+            },
+        )
+        return [
+            _parse_futures(row, (row.get("futs_shrn_iscd") or "").strip())
+            for row in (payload.get("output") or [])
+            if row.get("futs_shrn_iscd")
+        ]
+
+    async def list_option_expiries(self) -> list[str]:
+        """Available option expiry months (``YYYYMM``), nearest first."""
         payload = await self._get(
             "/uapi/domestic-futureoption/v1/quotations/display-board-option-list",
-            _TR_OPT_BOARD,
-            params,
+            _TR_OPT_MONTHS,
+            {
+                "FID_COND_SCR_DIV_CODE": "509",
+                "FID_COND_MRKT_DIV_CODE": "",
+                "FID_COND_MRKT_CLS_CODE": "",
+            },
         )
-        return _parse_option_chain(payload, target, expiry)
+        months = [
+            (row.get("mtrt_yymm") or "").strip()
+            for row in (payload.get("output") or [])
+            if (row.get("mtrt_yymm") or "").strip()
+        ]
+        return sorted(months)
+
+    async def get_option_chain(
+        self, underlying: str = "KOSPI200", expiry: str | None = None
+    ) -> OptionChain:
+        """Call/put option chain for a given expiry month (``YYYYMM``).
+
+        KIS index options are always on the KOSPI 200; ``underlying`` is carried
+        through onto the returned chain for labelling. When ``expiry`` is omitted
+        the nearest listed expiry is used.
+        """
+        if not expiry:
+            expiries = await self.list_option_expiries()
+            if not expiries:
+                raise RuntimeError("KIS returned no option expiries")
+            expiry = expiries[0]
+        payload = await self._get(
+            "/uapi/domestic-futureoption/v1/quotations/display-board-callput",
+            _TR_OPT_CALLPUT,
+            {
+                "FID_COND_MRKT_DIV_CODE": "O",
+                "FID_COND_SCR_DIV_CODE": "20503",
+                "FID_MRKT_CLS_CODE": "CO",  # calls -> output1
+                "FID_MTRT_CNT": expiry,
+                "FID_MRKT_CLS_CODE1": "PO",  # puts -> output2
+                "FID_COND_MRKT_CLS_CODE": "",  # required key; empty is accepted
+            },
+        )
+        return _parse_option_chain(payload, underlying.strip().upper(), expiry)
 
     async def aclose(self) -> None:
         await self._client.aclose()
