@@ -362,9 +362,7 @@ class TestTelegramBotPollerPollAll:
     def poller(self) -> TelegramBotPoller:
         return TelegramBotPoller(bot_token="tok", chat_id="999", timeout=1)
 
-    async def test_poll_all_returns_commands_and_messages(
-        self, poller: TelegramBotPoller
-    ) -> None:
+    async def test_poll_all_returns_commands_and_messages(self, poller: TelegramBotPoller) -> None:
         payload = {
             "ok": True,
             "result": [
@@ -398,9 +396,7 @@ class TestTelegramBotPollerPollAll:
         assert len(messages) == 1
         assert messages[0].text == "hello"
 
-    async def test_poll_all_skips_whitespace_only_messages(
-        self, poller: TelegramBotPoller
-    ) -> None:
+    async def test_poll_all_skips_whitespace_only_messages(self, poller: TelegramBotPoller) -> None:
         payload = {
             "ok": True,
             "result": [_make_update(1, 999, "   ")],
@@ -411,9 +407,7 @@ class TestTelegramBotPollerPollAll:
 
         assert messages == []
 
-    async def test_poll_all_filters_unauthorised_chats(
-        self, poller: TelegramBotPoller
-    ) -> None:
+    async def test_poll_all_filters_unauthorised_chats(self, poller: TelegramBotPoller) -> None:
         payload = {
             "ok": True,
             "result": [
@@ -436,9 +430,7 @@ class TestTelegramBotPollerPollAll:
         assert commands == []
         assert messages == []
 
-    async def test_poll_still_returns_only_commands(
-        self, poller: TelegramBotPoller
-    ) -> None:
+    async def test_poll_still_returns_only_commands(self, poller: TelegramBotPoller) -> None:
         payload = {
             "ok": True,
             "result": [

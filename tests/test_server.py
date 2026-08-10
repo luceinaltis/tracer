@@ -547,13 +547,9 @@ class TestServerConversationRouting:
         poller = _make_poller()
         engine = self._engine_mock("AAPL looks bullish.")
 
-        poller.poll_all = AsyncMock(
-            return_value=([], [BotMessage(text="What about AAPL?")])
-        )
+        poller.poll_all = AsyncMock(return_value=([], [BotMessage(text="What about AAPL?")]))
 
-        server = Server(
-            monitor, executor, telegram_poller=poller, conversation_engine=engine
-        )
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
         await server._tick()
 
         engine.query.assert_awaited_once_with("What about AAPL?")
@@ -575,9 +571,7 @@ class TestServerConversationRouting:
             )
         )
 
-        server = Server(
-            monitor, executor, telegram_poller=poller, conversation_engine=engine
-        )
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
         await server._tick()
 
         engine.query.assert_not_awaited()
@@ -591,13 +585,9 @@ class TestServerConversationRouting:
         engine = self._engine_mock()
         engine.query = AsyncMock(side_effect=RuntimeError("LLM timeout"))
 
-        poller.poll_all = AsyncMock(
-            return_value=([], [BotMessage(text="analyze TSLA")])
-        )
+        poller.poll_all = AsyncMock(return_value=([], [BotMessage(text="analyze TSLA")]))
 
-        server = Server(
-            monitor, executor, telegram_poller=poller, conversation_engine=engine
-        )
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
         await server._tick()
 
         assert poller.send_reply.await_count == 2
@@ -613,9 +603,7 @@ class TestServerConversationRouting:
 
         poller.poll_all = AsyncMock(return_value=([], [BotMessage(text="")]))
 
-        server = Server(
-            monitor, executor, telegram_poller=poller, conversation_engine=engine
-        )
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
         await server._tick()
 
         engine.query.assert_not_awaited()
@@ -641,9 +629,7 @@ class TestServerConversationRouting:
 
         poller.poll_all = AsyncMock(return_value=([], []))
 
-        server = Server(
-            monitor, executor, telegram_poller=poller, conversation_engine=engine
-        )
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
         await server._tick()
 
         poller.poll_all.assert_awaited_once()
@@ -663,9 +649,7 @@ class TestServerConversationRouting:
             )
         )
 
-        server = Server(
-            monitor, executor, telegram_poller=poller, conversation_engine=engine
-        )
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
         await server._tick()
 
         engine.query.assert_awaited_once_with("Analyze NVDA")
@@ -680,9 +664,7 @@ class TestBotCommandHandlerConversationHelp:
     def test_help_includes_query_hint_when_engine_enabled(self) -> None:
         monitor = _make_monitor()
         executor = _make_executor()
-        server = Server(
-            monitor, executor, conversation_engine=MagicMock()
-        )
+        server = Server(monitor, executor, conversation_engine=MagicMock())
         out = server._dispatch_bot_command(BotCommand("help", [], "/help"))
         assert "question directly" in out.lower() or "without a /" in out
 
