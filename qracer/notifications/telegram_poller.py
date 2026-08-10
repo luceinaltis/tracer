@@ -29,6 +29,13 @@ _DEFAULT_MESSAGE_CHAR_LIMIT = 4000
 
 
 @dataclass(frozen=True)
+class BotMessage:
+    """A free-text (non-command) message from a Telegram chat."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class BotCommand:
     """A parsed bot command from a Telegram message.
 
@@ -121,9 +128,18 @@ class TelegramBotPoller:
         Network and API errors are logged and converted to an empty list
         — the caller is expected to retry on the next tick.
         """
-        return await asyncio.to_thread(self._poll_sync)
+        commands, _ = await asyncio.to_thread(self._fetch_updates)
+        return commands
 
-    def _poll_sync(self) -> list[BotCommand]:
+    async def poll_all(self) -> tuple[list[BotCommand], list[BotMessage]]:
+        """Long-poll Telegram for both commands and free-text messages.
+
+        Like :meth:`poll` but also returns non-command text messages so
+        the caller can route them to a conversation engine.
+        """
+        return await asyncio.to_thread(self._fetch_updates)
+
+    def _fetch_updates(self) -> tuple[list[BotCommand], list[BotMessage]]:
         url = f"{_TELEGRAM_API}/bot{self._bot_token}/getUpdates"
         params: dict[str, Any] = {
             "timeout": self._timeout,
@@ -137,26 +153,27 @@ class TelegramBotPoller:
             with urllib.request.urlopen(full_url, timeout=self._timeout + 5) as resp:
                 if resp.status != 200:
                     logger.warning("Telegram getUpdates returned status %s", resp.status)
-                    return []
+                    return [], []
                 payload = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             logger.error("Telegram getUpdates failed (HTTP %s): %s", exc.code, exc.reason)
-            return []
+            return [], []
         except urllib.error.URLError as exc:
             logger.error("Telegram getUpdates failed (network): %s", exc.reason)
-            return []
+            return [], []
         except (json.JSONDecodeError, ValueError) as exc:
             logger.error("Telegram getUpdates returned invalid JSON: %s", exc)
-            return []
+            return [], []
 
         if not isinstance(payload, dict) or not payload.get("ok"):
             logger.warning(
                 "Telegram getUpdates returned ok=false: %s",
                 payload.get("description") if isinstance(payload, dict) else payload,
             )
-            return []
+            return [], []
 
         commands: list[BotCommand] = []
+        messages: list[BotMessage] = []
         max_update_id = -1
         for update in payload.get("result", []):
             update_id = update.get("update_id")
@@ -179,11 +196,13 @@ class TelegramBotPoller:
             cmd = BotCommand.parse(text)
             if cmd is not None:
                 commands.append(cmd)
+            elif text.strip():
+                messages.append(BotMessage(text=text.strip()))
 
         if max_update_id >= 0:
             self._offset = max_update_id + 1
 
-        return commands
+        return commands, messages
 
     async def send_reply(self, text: str) -> bool:
         """Send a plain-text reply to the authorised chat.

@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from qracer.agent_monitor import AgentMonitor
 from qracer.alert_monitor import AlertMonitor
@@ -20,8 +20,11 @@ from qracer.data.providers import StreamingProvider
 from qracer.notifications.bot_commands import BotCommandHandler
 from qracer.notifications.providers import Notification, NotificationCategory
 from qracer.notifications.registry import NotificationRegistry
-from qracer.notifications.telegram_poller import BotCommand, TelegramBotPoller
+from qracer.notifications.telegram_poller import BotCommand, BotMessage, TelegramBotPoller
 from qracer.task_executor import TaskExecutor
+
+if TYPE_CHECKING:
+    from qracer.conversation.engine import ConversationEngine
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class Server:
         briefing_scheduler: "BriefingScheduler | None" = None,
         telegram_poller: TelegramBotPoller | None = None,
         streaming_adapter: StreamingProvider | None = None,
+        conversation_engine: "ConversationEngine | None" = None,
         tick_interval: float = 1.0,
     ) -> None:
         self._alert_monitor = alert_monitor
@@ -60,6 +64,7 @@ class Server:
         self._notifications = notifications or NotificationRegistry()
         self._telegram_poller = telegram_poller
         self._streaming_adapter = streaming_adapter
+        self._conversation_engine = conversation_engine
         self._tick_interval = tick_interval
         self._shutdown_event = asyncio.Event()
         self._started_at: float | None = None
@@ -78,7 +83,12 @@ class Server:
             self._monitors.append((briefing_scheduler, self._handle_briefing_result))
 
         # Inbound Telegram bot commands are a separate concern from the tick loop.
-        self._bot = BotCommandHandler(alert_monitor.store, task_executor.store, self._status_text)
+        self._bot = BotCommandHandler(
+            alert_monitor.store,
+            task_executor.store,
+            self._status_text,
+            conversation_enabled=conversation_engine is not None,
+        )
 
     async def run(self) -> None:
         """Main loop — runs until shutdown() is called."""
@@ -169,12 +179,19 @@ class Server:
 
         if self._telegram_poller is not None:
             try:
-                commands = await self._telegram_poller.poll()
+                if self._conversation_engine is not None:
+                    commands, messages = await self._telegram_poller.poll_all()
+                else:
+                    commands = await self._telegram_poller.poll()
+                    messages = []
             except Exception:
                 logger.debug("Telegram poll failed", exc_info=True)
                 commands = []
+                messages = []
             for command in commands:
                 await self._handle_bot_command(command)
+            for message in messages:
+                await self._handle_bot_message(message)
 
     # -- per-monitor result handlers ------------------------------------
 
@@ -224,6 +241,21 @@ class Server:
             reply = f"Error handling /{command.action}: {exc}"
         if reply and self._telegram_poller is not None:
             await self._telegram_poller.send_reply(reply)
+
+    async def _handle_bot_message(self, message: BotMessage) -> None:
+        """Route a free-text Telegram message through ConversationEngine."""
+        if self._conversation_engine is None or self._telegram_poller is None:
+            return
+        text = message.text
+        if not text:
+            return
+        await self._telegram_poller.send_reply("Analyzing your query...")
+        try:
+            response = await self._conversation_engine.query(text)
+            await self._telegram_poller.send_reply(response.text)
+        except Exception as exc:
+            logger.exception("Conversation query failed: %s", text[:80])
+            await self._telegram_poller.send_reply(f"Query failed: {exc}")
 
     def _dispatch_bot_command(self, command: BotCommand) -> str:
         """Route a bot command to a reply (delegates to the BotCommandHandler)."""

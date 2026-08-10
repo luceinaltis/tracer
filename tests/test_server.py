@@ -6,7 +6,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from qracer.alerts import Alert, AlertCondition
-from qracer.notifications.telegram_poller import BotCommand
+from qracer.notifications.telegram_poller import BotCommand, BotMessage
 from qracer.server import Server, _format_duration
 from qracer.tasks import Task, TaskActionType, TaskScheduleType, TaskStatus
 
@@ -528,6 +528,152 @@ class TestBotCommandHandlers:
             TaskActionType.ANALYZE, {"ticker": "AAPL"}, "every 1h"
         )
         assert "Scheduled task nn" in out
+
+
+class TestServerConversationRouting:
+    """Telegram free-text → ConversationEngine → reply."""
+
+    @staticmethod
+    def _engine_mock(response_text: str = "Analysis complete.") -> MagicMock:
+        engine = MagicMock()
+        resp = MagicMock()
+        resp.text = response_text
+        engine.query = AsyncMock(return_value=resp)
+        return engine
+
+    async def test_free_text_routed_to_engine(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        poller = _make_poller()
+        engine = self._engine_mock("AAPL looks bullish.")
+
+        poller.poll_all = AsyncMock(return_value=([], [BotMessage(text="What about AAPL?")]))
+
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
+        await server._tick()
+
+        engine.query.assert_awaited_once_with("What about AAPL?")
+        assert poller.send_reply.await_count == 2
+        assert poller.send_reply.await_args_list[0][0][0] == "Analyzing your query..."
+        assert "AAPL looks bullish." in poller.send_reply.await_args_list[1][0][0]
+
+    async def test_commands_still_dispatched_with_engine(self) -> None:
+        monitor = _make_monitor()
+        monitor.store.get_active.return_value = []
+        executor = _make_executor()
+        poller = _make_poller()
+        engine = self._engine_mock()
+
+        poller.poll_all = AsyncMock(
+            return_value=(
+                [BotCommand(action="alerts", args=[], raw_text="/alerts")],
+                [],
+            )
+        )
+
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
+        await server._tick()
+
+        engine.query.assert_not_awaited()
+        poller.send_reply.assert_awaited_once()
+        assert "No active alerts" in poller.send_reply.await_args[0][0]
+
+    async def test_engine_error_sends_failure_reply(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        poller = _make_poller()
+        engine = self._engine_mock()
+        engine.query = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+
+        poller.poll_all = AsyncMock(return_value=([], [BotMessage(text="analyze TSLA")]))
+
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
+        await server._tick()
+
+        assert poller.send_reply.await_count == 2
+        error_reply = poller.send_reply.await_args_list[1][0][0]
+        assert "Query failed" in error_reply
+        assert "LLM timeout" in error_reply
+
+    async def test_empty_message_ignored(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        poller = _make_poller()
+        engine = self._engine_mock()
+
+        poller.poll_all = AsyncMock(return_value=([], [BotMessage(text="")]))
+
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
+        await server._tick()
+
+        engine.query.assert_not_awaited()
+        poller.send_reply.assert_not_called()
+
+    async def test_no_engine_uses_poll_not_poll_all(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        poller = _make_poller()
+        poller.poll_all = AsyncMock()
+
+        server = Server(monitor, executor, telegram_poller=poller)
+        await server._tick()
+
+        poller.poll.assert_awaited_once()
+        poller.poll_all.assert_not_awaited()
+
+    async def test_with_engine_uses_poll_all(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        poller = _make_poller()
+        engine = self._engine_mock()
+
+        poller.poll_all = AsyncMock(return_value=([], []))
+
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
+        await server._tick()
+
+        poller.poll_all.assert_awaited_once()
+        poller.poll.assert_not_awaited()
+
+    async def test_mixed_commands_and_messages(self) -> None:
+        monitor = _make_monitor()
+        monitor.store.get_active.return_value = []
+        executor = _make_executor()
+        poller = _make_poller()
+        engine = self._engine_mock("Here is the analysis.")
+
+        poller.poll_all = AsyncMock(
+            return_value=(
+                [BotCommand(action="alerts", args=[], raw_text="/alerts")],
+                [BotMessage(text="Analyze NVDA")],
+            )
+        )
+
+        server = Server(monitor, executor, telegram_poller=poller, conversation_engine=engine)
+        await server._tick()
+
+        engine.query.assert_awaited_once_with("Analyze NVDA")
+        assert poller.send_reply.await_count == 3
+        replies = [call[0][0] for call in poller.send_reply.await_args_list]
+        assert "No active alerts" in replies[0]
+        assert replies[1] == "Analyzing your query..."
+        assert "Here is the analysis." in replies[2]
+
+
+class TestBotCommandHandlerConversationHelp:
+    def test_help_includes_query_hint_when_engine_enabled(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        server = Server(monitor, executor, conversation_engine=MagicMock())
+        out = server._dispatch_bot_command(BotCommand("help", [], "/help"))
+        assert "question directly" in out.lower() or "without a /" in out
+
+    def test_help_omits_query_hint_without_engine(self) -> None:
+        monitor = _make_monitor()
+        executor = _make_executor()
+        server = Server(monitor, executor)
+        out = server._dispatch_bot_command(BotCommand("help", [], "/help"))
+        assert "without a /" not in out
 
 
 class TestFormatDuration:

@@ -776,6 +776,43 @@ def serve(check_interval: int) -> None:
     # Real-time price streaming (WebSocket) — falls back to REST polling if unavailable.
     streaming_adapter = _build_streaming_adapter(config)
 
+    # Conversation engine for Telegram free-text queries.
+    conversation_engine = None
+    if telegram_poller is not None:
+        import uuid
+
+        from qracer.conversation.engine import ConversationEngine
+        from qracer.memory.fact_store import FactStore
+        from qracer.memory.memory_searcher import MemorySearcher
+        from qracer.memory.session_logger import SessionLogger
+
+        sessions_dir = _user_dir() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        bot_session_id = f"bot-{uuid.uuid4().hex[:12]}"
+        bot_session_logger = SessionLogger(sessions_dir / f"{bot_session_id}.jsonl")
+
+        summaries_dir = _user_dir() / "summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        memory_searcher = MemorySearcher(_user_dir() / "memory_index.duckdb")
+        memory_searcher.index_directory(summaries_dir)
+
+        fact_store = FactStore(_user_dir() / "fact_store.duckdb")
+        reports_dir = _user_dir() / "reports"
+
+        conversation_engine = ConversationEngine(
+            llm_registry,
+            data_registry,
+            max_iterations=app_cfg.max_iterations,
+            confidence_threshold=app_cfg.confidence_threshold,
+            session_logger=bot_session_logger,
+            report_dir=reports_dir,
+            language=app_cfg.language,
+            memory_searcher=memory_searcher,
+            summaries_dir=summaries_dir,
+            fact_store=fact_store,
+            context_path=_user_dir() / "context.json",
+        )
+
     server = Server(
         alert_monitor,
         task_executor,
@@ -785,6 +822,7 @@ def serve(check_interval: int) -> None:
         briefing_scheduler=briefing_scheduler,
         telegram_poller=telegram_poller,
         streaming_adapter=streaming_adapter,
+        conversation_engine=conversation_engine,
         tick_interval=1.0,
     )
 
@@ -805,7 +843,10 @@ def serve(check_interval: int) -> None:
             f" cooldown={app_cfg.alert_cooldown_minutes}m"
         )
     if telegram_poller is not None:
-        click.echo("  Telegram bot: receiving commands (try /help in chat)")
+        if conversation_engine is not None:
+            click.echo("  Telegram bot: commands + conversational queries (try /help in chat)")
+        else:
+            click.echo("  Telegram bot: receiving commands (try /help in chat)")
     if agent_monitor is not None:
         scheduled = sum(
             1 for a in agent_store.agents if a.enabled and a.trigger_type.value != "manual"

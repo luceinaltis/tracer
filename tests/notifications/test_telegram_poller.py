@@ -11,6 +11,7 @@ import pytest
 
 from qracer.notifications.telegram_poller import (
     BotCommand,
+    BotMessage,
     TelegramBotPoller,
 )
 
@@ -334,3 +335,112 @@ class TestTelegramBotPollerReply:
         with patch(target, side_effect=urllib.error.URLError("offline")):
             ok = await poller.send_reply("hello")
         assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# BotMessage
+# ---------------------------------------------------------------------------
+
+
+class TestBotMessage:
+    def test_frozen(self) -> None:
+        msg = BotMessage(text="hello")
+        assert msg.text == "hello"
+
+    def test_equality(self) -> None:
+        assert BotMessage(text="hi") == BotMessage(text="hi")
+        assert BotMessage(text="hi") != BotMessage(text="bye")
+
+
+# ---------------------------------------------------------------------------
+# poll_all — commands + free-text messages
+# ---------------------------------------------------------------------------
+
+
+class TestTelegramBotPollerPollAll:
+    @pytest.fixture()
+    def poller(self) -> TelegramBotPoller:
+        return TelegramBotPoller(bot_token="tok", chat_id="999", timeout=1)
+
+    async def test_poll_all_returns_commands_and_messages(self, poller: TelegramBotPoller) -> None:
+        payload = {
+            "ok": True,
+            "result": [
+                _make_update(10, 999, "/status"),
+                _make_update(11, 999, "What is the outlook for AAPL?"),
+                _make_update(12, 999, "/alerts"),
+            ],
+        }
+        target = "qracer.notifications.telegram_poller.urllib.request.urlopen"
+        with patch(target, return_value=_mock_response(payload)):
+            commands, messages = await poller.poll_all()
+
+        assert len(commands) == 2
+        assert commands[0].action == "status"
+        assert commands[1].action == "alerts"
+        assert len(messages) == 1
+        assert messages[0].text == "What is the outlook for AAPL?"
+        assert poller.offset == 13
+
+    async def test_poll_all_strips_whitespace_from_messages(
+        self, poller: TelegramBotPoller
+    ) -> None:
+        payload = {
+            "ok": True,
+            "result": [_make_update(1, 999, "  hello  ")],
+        }
+        target = "qracer.notifications.telegram_poller.urllib.request.urlopen"
+        with patch(target, return_value=_mock_response(payload)):
+            _, messages = await poller.poll_all()
+
+        assert len(messages) == 1
+        assert messages[0].text == "hello"
+
+    async def test_poll_all_skips_whitespace_only_messages(self, poller: TelegramBotPoller) -> None:
+        payload = {
+            "ok": True,
+            "result": [_make_update(1, 999, "   ")],
+        }
+        target = "qracer.notifications.telegram_poller.urllib.request.urlopen"
+        with patch(target, return_value=_mock_response(payload)):
+            _, messages = await poller.poll_all()
+
+        assert messages == []
+
+    async def test_poll_all_filters_unauthorised_chats(self, poller: TelegramBotPoller) -> None:
+        payload = {
+            "ok": True,
+            "result": [
+                _make_update(1, 999, "legit question"),
+                _make_update(2, 1234, "sneaky message"),
+            ],
+        }
+        target = "qracer.notifications.telegram_poller.urllib.request.urlopen"
+        with patch(target, return_value=_mock_response(payload)):
+            _, messages = await poller.poll_all()
+
+        assert len(messages) == 1
+        assert messages[0].text == "legit question"
+
+    async def test_poll_all_empty_on_error(self, poller: TelegramBotPoller) -> None:
+        target = "qracer.notifications.telegram_poller.urllib.request.urlopen"
+        with patch(target, side_effect=urllib.error.URLError("offline")):
+            commands, messages = await poller.poll_all()
+
+        assert commands == []
+        assert messages == []
+
+    async def test_poll_still_returns_only_commands(self, poller: TelegramBotPoller) -> None:
+        payload = {
+            "ok": True,
+            "result": [
+                _make_update(10, 999, "/status"),
+                _make_update(11, 999, "free text query"),
+            ],
+        }
+        target = "qracer.notifications.telegram_poller.urllib.request.urlopen"
+        with patch(target, return_value=_mock_response(payload)):
+            commands = await poller.poll()
+
+        assert len(commands) == 1
+        assert commands[0].action == "status"
