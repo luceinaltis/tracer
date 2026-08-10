@@ -23,10 +23,13 @@ class BotCommandHandler:
         alert_store: AlertStore,
         task_store: TaskStore,
         status_provider: Callable[[], str],
+        *,
+        conversation_enabled: bool = False,
     ) -> None:
         self._alert_store = alert_store
         self._task_store = task_store
         self._status_provider = status_provider
+        self._conversation_enabled = conversation_enabled
 
     def dispatch(self, command: BotCommand) -> str:
         """Route a command to its handler; handlers return the reply text."""
@@ -50,18 +53,21 @@ class BotCommandHandler:
             )
         return f"Unknown command: /{action}. Try /help."
 
-    @staticmethod
-    def _cmd_help() -> str:
-        return (
-            "qracer bot commands:\n"
-            "/status — server status and uptime\n"
-            "/alerts — list active price alerts\n"
-            "/alert TICKER above|below PRICE — create a price alert\n"
-            "/tasks — list scheduled tasks\n"
-            "/schedule ACTION TICKER SCHEDULE — schedule a task\n"
-            "    e.g. /schedule analyze AAPL every 1h\n"
-            "/help — show this message"
-        )
+    def _cmd_help(self) -> str:
+        lines = [
+            "qracer bot commands:",
+            "/status — server status and uptime",
+            "/alerts — list active price alerts",
+            "/alert TICKER above|below PRICE — create a price alert",
+            "/tasks — list scheduled tasks",
+            "/schedule ACTION TICKER SCHEDULE — schedule a task",
+            "    e.g. /schedule analyze AAPL every 1h",
+            "/help — show this message",
+        ]
+        if self._conversation_enabled:
+            lines.append("")
+            lines.append("You can also type any question directly (without a /) to query the AI.")
+        return "\n".join(lines)
 
     def _cmd_alerts(self) -> str:
         alerts = self._alert_store.get_active()
